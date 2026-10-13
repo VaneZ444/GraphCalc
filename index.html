@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GraphLab — Dynamic Graph Calculator</title>
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+
+<link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark">GL</span>
+    <span class="brand-name">GraphLab</span>
+  </div>
+
+  <nav class="tabs" id="tabs"></nav>
+
+  <div class="topbar-actions">
+    <button class="btn" id="btn-generate">Random graph</button>
+    <button class="btn" id="btn-clear">Clear</button>
+  </div>
+</header>
+
+<main class="workspace">
+  <aside class="sidebar">
+    <section class="panel" id="panel-tools">
+      <div class="panel-head"><h2>Tools</h2></div>
+      <div class="panel-body" id="tools-body"></div>
+    </section>
+
+    <section class="panel" id="panel-inspector">
+      <div class="panel-head"><h2>Inspector</h2></div>
+      <div class="panel-body" id="inspector-body"></div>
+    </section>
+
+    <section class="panel" id="panel-module">
+      <div class="panel-head"><h2 id="module-title">Module</h2></div>
+      <div class="panel-body" id="module-controls"></div>
+      <div class="panel-output" id="module-output"></div>
+    </section>
+  </aside>
+
+  <section class="stage">
+    <div class="stage-head">
+      <div class="stage-meta" id="stage-meta"></div>
+    </div>
+
+    <div class="canvas-host" id="canvas-host"></div>
+
+    <div class="timeline" id="timeline"></div>
+  </section>
+</main>
+
+<dialog class="dialog" id="generator-dialog">
+  <form method="dialog" class="dialog-inner">
+    <h3>Random graph generator</h3>
+
+    <label class="field-label" for="gen-nodes">Nodes <span class="field-value" id="gen-nodes-value">10</span></label>
+    <input type="range" id="gen-nodes" min="3" max="40" value="10">
+
+    <label class="field-label" for="gen-density">Link probability <span class="field-value" id="gen-density-value">0.25</span></label>
+    <input type="range" id="gen-density" min="0.05" max="0.9" step="0.05" value="0.25">
+
+    <label class="field-label" for="gen-layout">Layout</label>
+    <select id="gen-layout" class="field">
+      <option value="circle">Circle</option>
+      <option value="grid">Grid</option>
+      <option value="scatter">Scatter</option>
+    </select>
+
+    <label class="field-label" for="gen-seed">Seed</label>
+    <input type="number" id="gen-seed" class="field" value="1337">
+
+    <label class="checkbox">
+      <input type="checkbox" id="gen-conditions" checked>
+      <span>Attach random time conditions to links</span>
+    </label>
+
+    <div class="dialog-actions">
+      <button value="cancel" class="btn">Cancel</button>
+      <button value="confirm" class="btn btn-primary" id="gen-confirm">Generate</button>
+    </div>
+  </form>
+</dialog>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
