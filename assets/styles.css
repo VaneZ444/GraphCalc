@@ -215,6 +215,10 @@ input[type="range"] {
   overflow: hidden;
 }
 
+/* ==========================================================================
+   Sidebar — panels keep their natural height and the column scrolls
+   ========================================================================== */
+
 .sidebar {
   width: 384px;
   flex: 0 0 384px;
@@ -223,9 +227,25 @@ input[type="range"] {
   gap: 10px;
   padding: 12px;
   overflow-y: auto;
+  overscroll-behavior: contain;
   border-right: 1px solid var(--border);
   background: var(--surface-alt);
+
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
 }
+
+.sidebar > .panel {
+  flex-shrink: 0;
+}
+
+.sidebar::-webkit-scrollbar { width: 8px; }
+.sidebar::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 4px;
+}
+.sidebar::-webkit-scrollbar-thumb:hover { background: var(--text-faint); }
+.sidebar::-webkit-scrollbar-track { background: transparent; }
 
 .stage {
   flex: 1;
@@ -492,6 +512,10 @@ input[type="range"] {
 
 .sparkline { width: 100%; height: 54px; display: block; margin-top: 10px; }
 
+/* ==========================================================================
+   Timeline
+   ========================================================================== */
+
 .timeline {
   display: flex;
   align-items: center;
@@ -600,6 +624,38 @@ input[type="range"] {
   cursor: pointer;
 }
 
+/* Timeline: formulation phase zone + marker */
+.tl-phase-zone {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  border-radius: 3px 0 0 3px;
+  background: rgba(181, 71, 8, 0.10);
+  pointer-events: none;
+}
+
+.tl-phase-mark {
+  position: absolute;
+  top: 50%;
+  width: 3px;
+  height: 15px;
+  background: var(--warn);
+  transform: translate(-50%, -50%);
+  border-radius: 2px;
+  pointer-events: none;
+  z-index: 2;
+  transition: background 0.15s;
+}
+
+.tl-phase-mark.is-passed {
+  background: var(--ok);
+}
+
+/* ==========================================================================
+   Dialog
+   ========================================================================== */
+
 .dialog {
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -629,20 +685,47 @@ input[type="range"] {
   margin-top: 20px;
 }
 
+/* ==========================================================================
+   Graph SVG — universal render target
+   ========================================================================== */
+
 .graph-svg {
   width: 100%;
   height: 100%;
   display: block;
   touch-action: none;
+
+  /* Drag fix — the SVG is a text-selection surface by default. Without
+     these rules the browser can start selecting text mid-drag, fire
+     pointercancel, and kill the drag. */
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-user-drag: none;
+
   background:
     linear-gradient(to right, #f4f6f9 1px, transparent 1px) 0 0 / 40px 40px,
     linear-gradient(to bottom, #f4f6f9 1px, transparent 1px) 0 0 / 40px 40px,
     #ffffff;
 }
 
+/* Same protection for every descendant — SVG text is still text. */
+.graph-svg * {
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-user-drag: none;
+}
+
 .graph-svg[data-tool="node"]  { cursor: crosshair; }
 .graph-svg[data-tool="edge"]  { cursor: crosshair; }
 .graph-svg[data-tool="erase"] { cursor: not-allowed; }
+
+/* While a node drag or pan is in progress, override every child's cursor. */
+.graph-svg.is-dragging,
+.graph-svg.is-dragging .node-hit,
+.graph-svg.is-dragging .node-body,
+.graph-svg.is-dragging .edge-hit {
+  cursor: grabbing;
+}
 
 /* -- edges -- */
 .edge {
@@ -703,60 +786,20 @@ input[type="range"] {
   dominant-baseline: central;
   pointer-events: none;
   user-select: none;
+  -webkit-user-select: none;
 }
 
-.node-hit { fill: transparent; cursor: grab; }
+/* Both the invisible hit-ring and the visible body are grabbable — the
+   cursor stays consistent whether the pointer is on the rim or the centre. */
+.node-hit {
+  fill: none;
+  stroke: none;
+  pointer-events: all;
+  cursor: grab;
+}
+
 .node-hit:active { cursor: grabbing; }
 
-@media (max-width: 900px) {
-  .workspace { flex-direction: column; }
-  .sidebar {
-    width: 100%;
-    flex: 0 0 46%;
-    border-right: none;
-    border-bottom: 1px solid var(--border);
-  }
-  .stage { flex: 1; min-height: 0; }
-  .brand-name { display: none; }
-}
-/* Timeline: formulation phase zone + marker */
-.tl-phase-zone {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  border-radius: 3px 0 0 3px;
-  background: rgba(181, 71, 8, 0.10);
-  pointer-events: none;
-}
-
-.tl-phase-mark {
-  position: absolute;
-  top: 50%;
-  width: 3px;
-  height: 15px;
-  background: var(--warn);
-  transform: translate(-50%, -50%);
-  border-radius: 2px;
-  pointer-events: none;
-  z-index: 2;
-  transition: background 0.15s;
-}
-
-.tl-phase-mark.is-passed {
-  background: var(--ok);
-}
-
-/* Module panel "formulating" placeholder */
-.formulating-note {
-  padding: 10px 12px;
-  background: var(--warn-soft);
-  border: 1px solid var(--warn-line);
-  border-radius: var(--radius-sm);
-  color: var(--warn);
-  font-size: 12px;
-  line-height: 1.5;
-}
 /* ==========================================================================
    Source graphs panel
    ========================================================================== */
@@ -941,4 +984,34 @@ input[type="range"] {
   font-size: 10.5px;
   line-height: 1.6;
   white-space: pre;
+}
+
+/* ==========================================================================
+   Module panel "formulating" placeholder
+   ========================================================================== */
+
+.formulating-note {
+  padding: 10px 12px;
+  background: var(--warn-soft);
+  border: 1px solid var(--warn-line);
+  border-radius: var(--radius-sm);
+  color: var(--warn);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* ==========================================================================
+   Responsive
+   ========================================================================== */
+
+@media (max-width: 900px) {
+  .workspace { flex-direction: column; }
+  .sidebar {
+    width: 100%;
+    flex: 0 0 46%;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+  .stage { flex: 1; min-height: 0; }
+  .brand-name { display: none; }
 }

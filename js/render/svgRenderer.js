@@ -255,6 +255,9 @@ export class SVGRenderer extends Renderer {
   }
 
   #onPointerDown(event) {
+    // Right-click: ignore entirely — let the native context menu appear.
+    if (event.button === 2) return;
+
     // Middle button, or Alt+left — start a pan. Bypasses the handlers.
     const wantsPan = event.button === 1 || (event.button === 0 && event.altKey);
     if (wantsPan) {
@@ -264,7 +267,7 @@ export class SVGRenderer extends Renderer {
         graphCoordA: this.#toLocal(event),
         viewport: { ...this._viewport },
       };
-      this.svg.style.cursor = 'grabbing';
+      this.svg.classList.add('is-dragging');
       this.svg.setPointerCapture(event.pointerId);
       return;
     }
@@ -280,7 +283,13 @@ export class SVGRenderer extends Renderer {
 
       const allowDrag = this.handlers.onNodePointerDown?.(nodeId, point, event) !== false;
       if (allowDrag) {
+        // CRITICAL — without preventDefault() the browser treats the
+        // pointerdown as the beginning of a text-selection gesture,
+        // fires pointercancel partway through the drag, and highlights
+        // text across the SVG instead of moving the node.
+        event.preventDefault();
         this.drag = { id: nodeId, offsetX: point.x - node.x, offsetY: point.y - node.y };
+        this.svg.classList.add('is-dragging');
         this.svg.setPointerCapture(event.pointerId);
       }
       return;
@@ -319,11 +328,12 @@ export class SVGRenderer extends Renderer {
   #onPointerUp() {
     if (this.panState) {
       this.panState = null;
-      this.svg.style.cursor = '';
+      this.svg.classList.remove('is-dragging');
       return;
     }
     if (!this.drag) return;
     this.drag = null;
+    this.svg.classList.remove('is-dragging');
     this.handlers.onPointerUp?.();
   }
 
