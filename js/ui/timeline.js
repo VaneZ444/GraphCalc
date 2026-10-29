@@ -1,22 +1,53 @@
+// js/ui/timeline.js
+//
+// Video-player style transport. Extended with a "formation phase" band:
+// the first segment of the track (from tMin to MERGE_T) is tinted, and a
+// vertical marker shows where the source graphs get formulated into the
+// unified graph. Once the playhead crosses the marker, the marker turns green.
+
 import { h } from '../util/dom.js';
 import { TIMELINE } from '../config.js';
+
+// Must match the MERGE_T constant used inside js/core/app.js.
+const MERGE_T = 1;
 
 const SPEEDS = [0.25, 0.5, 1, 2, 4];
 
 export function createTimeline(app, host) {
-  const fill = h('div', { class: 'tl-fill' });
-  const head = h('div', { class: 'tl-head' });
-  const track = h('div', { class: 'tl-track' }, fill, head);
+  /* ------------------------------------------------------------- elements */
 
-  const playButton = h('button', { class: 'tl-btn tl-play', title: 'Play / Pause' }, '▶');
-  const startButton = h('button', { class: 'tl-btn', title: 'Jump to start' }, '⏮');
-  const backButton = h('button', { class: 'tl-btn', title: 'Step back' }, '⏪');
+  const fill  = h('div', { class: 'tl-fill' });
+  const head  = h('div', { class: 'tl-head' });
+
+  const mergePercent =
+    ((MERGE_T - TIMELINE.min) / (TIMELINE.max - TIMELINE.min)) * 100;
+
+  const phaseZone = h('div', {
+    class: 'tl-phase-zone',
+    style: { width: `${mergePercent}%` },
+    title: 'Formulation phase — source graphs merge at t = 1',
+  });
+
+  const phaseMark = h('div', {
+    class: 'tl-phase-mark',
+    style: { left: `${mergePercent}%` },
+    title: 'Formulation completes here (t = 1)',
+  });
+
+  const track = h('div', { class: 'tl-track' },
+    phaseZone, fill, phaseMark, head);
+
+  /* ------------------------------------------------------------- controls */
+
+  const playButton    = h('button', { class: 'tl-btn tl-play', title: 'Play / Pause' }, '▶');
+  const startButton   = h('button', { class: 'tl-btn', title: 'Jump to start' }, '⏮');
+  const backButton    = h('button', { class: 'tl-btn', title: 'Step back' }, '⏪');
   const forwardButton = h('button', { class: 'tl-btn', title: 'Step forward' }, '⏩');
-  const endButton = h('button', { class: 'tl-btn', title: 'Jump to end' }, '⏭');
-  const loopButton = h('button', { class: 'tl-btn', title: 'Loop' }, '↻');
+  const endButton     = h('button', { class: 'tl-btn', title: 'Jump to end' }, '⏭');
+  const loopButton    = h('button', { class: 'tl-btn', title: 'Loop' }, '↻');
 
   const timeReadout = h('span', { class: 'tl-time' }, '0.00');
-  const maxReadout = h('span', {}, TIMELINE.max.toFixed(2));
+  const maxReadout  = h('span', {}, TIMELINE.max.toFixed(2));
 
   const speedSelect = h('select', { class: 'tl-speed', title: 'Playback speed' },
     ...SPEEDS.map(speed =>
@@ -58,7 +89,7 @@ export function createTimeline(app, host) {
   track.addEventListener('pointerup', stopSeeking);
   track.addEventListener('pointercancel', stopSeeking);
 
-  /* ----------------------------------------------------------------- sync */
+  /* ---------------------------------------------------------------- sync */
 
   function sync() {
     const ratio = app.progress;
@@ -70,11 +101,16 @@ export function createTimeline(app, host) {
     playButton.classList.toggle('is-active', app.playing);
     loopButton.classList.toggle('is-active', app.loop);
     speedSelect.value = String(app.speed);
+
+    // Marker turns green once the playhead crosses the formation tick.
+    phaseMark.classList.toggle('is-passed', app.t >= MERGE_T);
   }
 
   app.on('change', sync);
   app.on('transport', sync);
   sync();
+
+  /* ---------------------------------------------------------------- mount */
 
   host.append(
     h('div', { class: 'tl-controls' },

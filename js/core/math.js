@@ -1,8 +1,3 @@
-// LaTeX-flavoured expression engine.
-// Supports: numbers, variables (t), + - * / % ^, comparisons, && || !,
-// functions (\sin, \cos, \sqrt, \ln, ...), grouping with () and {}.
-// Implicit multiplication works: `2t`, `3(t+1)`, `(a)(b)`.
-
 const CONSTANTS = {
   pi: Math.PI,
   PI: Math.PI,
@@ -329,10 +324,6 @@ function evaluateNode(node, scope) {
 
 const compileCache = new Map();
 
-/**
- * Compile a formula source into `(scope) => number`.
- * Results are cached by source string.
- */
 export function compile(source) {
   let fn = compileCache.get(source);
   if (!fn) {
@@ -343,16 +334,10 @@ export function compile(source) {
   return fn;
 }
 
-/**
- * Evaluate a formula once.
- */
 export function evaluate(source, scope) {
   return compile(source)(scope);
 }
 
-/**
- * Validate a formula without throwing.
- */
 export function validate(source) {
   try {
     compile(source);

@@ -21,13 +21,18 @@
   <nav class="tabs" id="tabs"></nav>
 
   <div class="topbar-actions">
-    <button class="btn" id="btn-generate">Random graph</button>
+    <button class="btn" id="btn-generate">New graph set</button>
     <button class="btn" id="btn-clear">Clear</button>
   </div>
 </header>
 
 <main class="workspace">
   <aside class="sidebar">
+    <section class="panel" id="panel-sources">
+      <div class="panel-head"><h2>Source graphs</h2></div>
+      <div class="panel-body" id="sources-body"></div>
+    </section>
+
     <section class="panel" id="panel-tools">
       <div class="panel-head"><h2>Tools</h2></div>
       <div class="panel-body" id="tools-body"></div>
@@ -58,20 +63,27 @@
 
 <dialog class="dialog" id="generator-dialog">
   <form method="dialog" class="dialog-inner">
-    <h3>Random graph generator</h3>
+    <h3>Random graph set generator</h3>
 
-    <label class="field-label" for="gen-nodes">Nodes <span class="field-value" id="gen-nodes-value">10</span></label>
-    <input type="range" id="gen-nodes" min="3" max="40" value="10">
+    <label class="field-label" for="gen-count">
+      Number of graphs <span class="field-value" id="gen-count-value">6</span>
+    </label>
+    <input type="range" id="gen-count" min="1" max="200" value="6">
 
-    <label class="field-label" for="gen-density">Link probability <span class="field-value" id="gen-density-value">0.25</span></label>
-    <input type="range" id="gen-density" min="0.05" max="0.9" step="0.05" value="0.25">
+    <label class="field-label" for="gen-nodes">
+      Nodes per graph <span class="field-value" id="gen-nodes-value">4</span>
+    </label>
+    <input type="range" id="gen-nodes" min="2" max="12" value="4">
 
-    <label class="field-label" for="gen-layout">Layout</label>
-    <select id="gen-layout" class="field">
-      <option value="circle">Circle</option>
-      <option value="grid">Grid</option>
-      <option value="scatter">Scatter</option>
-    </select>
+    <label class="field-label" for="gen-names">
+      Shared name pool <span class="field-value" id="gen-names-value">8</span>
+    </label>
+    <input type="range" id="gen-names" min="2" max="26" value="8">
+
+    <label class="field-label" for="gen-density">
+      Link probability <span class="field-value" id="gen-density-value">0.50</span>
+    </label>
+    <input type="range" id="gen-density" min="0.05" max="0.9" step="0.05" value="0.5">
 
     <label class="field-label" for="gen-seed">Seed</label>
     <input type="number" id="gen-seed" class="field" value="1337">
@@ -80,6 +92,11 @@
       <input type="checkbox" id="gen-conditions" checked>
       <span>Attach random time conditions to links</span>
     </label>
+
+    <p class="hint" style="margin-top: 8px;">
+      A small name pool makes graphs share more node names, so more of them
+      merge into a single component. A large pool keeps them fragmented.
+    </p>
 
     <div class="dialog-actions">
       <button value="cancel" class="btn">Cancel</button>

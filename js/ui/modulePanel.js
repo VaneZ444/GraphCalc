@@ -28,6 +28,15 @@ export function createModulePanel(app, { titleHost, controlsHost, outputHost }) 
   }
 
   function renderOutput() {
+    if (!app.isFormulated) {
+      clear(outputHost);
+      outputHost.append(
+        h('div', { class: 'formulating-note' },
+          `Formulating ${app.graphSet.size} source graph${app.graphSet.size === 1 ? '' : 's'} — ` +
+          'drag the timeline to t ≥ 1 to analyze the merged result.')
+      );
+      return;
+    }
     const module = app.activeModule;
     clear(outputHost);
 

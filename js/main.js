@@ -1,3 +1,7 @@
+// js/main.js
+//
+// Application bootstrap and render pipeline.
+
 import { App } from './core/app.js';
 import { createRenderer } from './render/index.js';
 import { createTabs } from './ui/tabs.js';
@@ -7,7 +11,7 @@ import { createTimeline } from './ui/timeline.js';
 import { createModulePanel } from './ui/modulePanel.js';
 import { attachGraphController } from './ui/graphController.js';
 import { createGeneratorDialog } from './ui/generatorDialog.js';
-import { generateRandomGraph } from './generators/randomGraph.js';
+import { generateGraphSet } from './generators/randomGraph.js';
 
 /* ------------------------------------------------------------------ setup */
 
@@ -29,12 +33,7 @@ createModulePanel(app, {
 createGeneratorDialog(app);
 
 document.getElementById('btn-clear').addEventListener('click', () => {
-  app.graph.clear();
-  app.selection = null;
-  app.startNodeId = null;
-  app.pendingFrom = null;
-  app.emit('selection', null);
-  app.afterGraphMutation();
+  app.clearAll();
 });
 
 /* --------------------------------------------------------- render pipeline */
@@ -44,16 +43,34 @@ app.on('change', () => {
   updateStageMeta();
 });
 
-function updateStageMeta() {
-  const nodes = app.graph.nodes.length;
-  const edges = app.graph.edges.length;
-  const active = [...app.edgeStates.values()].filter(s => s.active).length;
+app.on('transport', () => {
+  updateStageMeta();
+});
 
-  document.getElementById('stage-meta').textContent =
-    `${nodes} nodes · ${edges} links · ${active} active · t = ${app.t.toFixed(2)}`;
+function updateStageMeta() {
+  const meta = document.getElementById('stage-meta');
+
+  if (!app.isFormulated) {
+    const n = app.graphSet.size;
+    meta.textContent =
+      `Formulating: ${n} source graph${n === 1 ? '' : 's'} · ` +
+      `drag the playhead to t ≥ 1 to merge · t = ${app.t.toFixed(2)}`;
+    return;
+  }
+
+  const nodes  = app.unifiedGraph.nodes.length;
+  const edges  = app.unifiedGraph.edges.length;
+  const active = [...app.edgeStates.values()].filter(s => s.active).length;
+  const components = app.components.length;
+
+  meta.textContent =
+    `${components} component${components === 1 ? '' : 's'} · ` +
+    `${nodes} node${nodes === 1 ? '' : 's'} · ` +
+    `${edges} link${edges === 1 ? '' : 's'} · ` +
+    `${active} active · t = ${app.t.toFixed(2)}`;
 }
 
-/* ----------------------------------------------------------- animation loop */
+/* ---------------------------------------------------------- animation loop */
 
 let previous = performance.now();
 
@@ -69,12 +86,16 @@ requestAnimationFrame(frame);
 
 /* --------------------------------------------------------------- bootstrap */
 
-generateRandomGraph(app.graph, {
-  nodeCount: 11,
-  edgeProbability: 0.24,
-  layout: 'circle',
+// 6 source graphs over a small shared name pool — most of them merge.
+// Starting at t = 2 drops the user straight into the merged view; scrub back
+// toward t = 0 to see the raw source graphs on the grid.
+app.setGraphSet(generateGraphSet({
+  count: 6,
+  nodesPerGraph: 4,
+  edgeProbability: 0.5,
+  namePoolSize: 8,
   seed: 7,
   conditions: true,
-});
+}));
 
-app.recompute();
+app.setTime(2);

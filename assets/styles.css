@@ -719,3 +719,125 @@ input[type="range"] {
   .stage { flex: 1; min-height: 0; }
   .brand-name { display: none; }
 }
+/* Timeline: formulation phase zone + marker */
+.tl-phase-zone {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  border-radius: 3px 0 0 3px;
+  background: rgba(181, 71, 8, 0.10);
+  pointer-events: none;
+}
+
+.tl-phase-mark {
+  position: absolute;
+  top: 50%;
+  width: 3px;
+  height: 15px;
+  background: var(--warn);
+  transform: translate(-50%, -50%);
+  border-radius: 2px;
+  pointer-events: none;
+  z-index: 2;
+  transition: background 0.15s;
+}
+
+.tl-phase-mark.is-passed {
+  background: var(--ok);
+}
+
+/* Module panel "formulating" placeholder */
+.formulating-note {
+  padding: 10px 12px;
+  background: var(--warn-soft);
+  border: 1px solid var(--warn-line);
+  border-radius: var(--radius-sm);
+  color: var(--warn);
+  font-size: 12px;
+  line-height: 1.5;
+}
+/* ==========================================================================
+   Source graphs panel
+   ========================================================================== */
+
+.source-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 260px;
+  overflow-y: auto;
+  margin: 0 -6px;
+  padding: 0 6px;
+}
+
+.source-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  cursor: pointer;
+  font-size: 12px;
+  transition: background 0.1s, border-color 0.1s;
+}
+
+.source-item:hover {
+  background: var(--surface-alt);
+  border-color: var(--border-strong);
+}
+
+.source-item.is-active {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+}
+
+.source-index {
+  font-family: var(--mono);
+  color: var(--text-dim);
+  font-size: 11px;
+  min-width: 26px;
+}
+
+.source-item.is-active .source-index {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.source-name {
+  flex: 1;
+  color: var(--text);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-stats {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-faint);
+}
+
+.source-delete {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  padding: 0 3px;
+  border-radius: 3px;
+  opacity: 0;
+  transition: opacity 0.1s, color 0.1s, background 0.1s;
+}
+
+.source-item:hover .source-delete { opacity: 1; }
+
+.source-delete:hover {
+  color: var(--err);
+  background: var(--err-soft);
+}

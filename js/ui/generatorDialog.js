@@ -1,46 +1,48 @@
-import { h } from '../util/dom.js';
-import { generateRandomGraph } from '../generators/randomGraph.js';
+// js/ui/generatorDialog.js
+
+import { generateGraphSet } from '../generators/randomGraph.js';
 
 export function createGeneratorDialog(app) {
   const dialog = document.getElementById('generator-dialog');
 
-  const nodesInput = dialog.querySelector('#gen-nodes');
-  const nodesValue = dialog.querySelector('#gen-nodes-value');
-  const densityInput = dialog.querySelector('#gen-density');
-  const densityValue = dialog.querySelector('#gen-density-value');
-  const layoutInput = dialog.querySelector('#gen-layout');
-  const seedInput = dialog.querySelector('#gen-seed');
+  const countInput      = dialog.querySelector('#gen-count');
+  const countValue      = dialog.querySelector('#gen-count-value');
+  const nodesInput      = dialog.querySelector('#gen-nodes');
+  const nodesValue      = dialog.querySelector('#gen-nodes-value');
+  const densityInput    = dialog.querySelector('#gen-density');
+  const densityValue    = dialog.querySelector('#gen-density-value');
+  const namesInput      = dialog.querySelector('#gen-names');
+  const namesValue      = dialog.querySelector('#gen-names-value');
+  const seedInput       = dialog.querySelector('#gen-seed');
   const conditionsInput = dialog.querySelector('#gen-conditions');
 
-  nodesInput.addEventListener('input', () => {
-    nodesValue.textContent = nodesInput.value;
-  });
+  const bind = (input, out, fmt = v => v) => {
+    const upd = () => { out.textContent = fmt(input.value); };
+    input.addEventListener('input', upd);
+    upd();
+  };
 
-  densityInput.addEventListener('input', () => {
-    densityValue.textContent = Number(densityInput.value).toFixed(2);
-  });
+  bind(countInput, countValue);
+  bind(nodesInput, nodesValue);
+  bind(densityInput, densityValue, v => Number(v).toFixed(2));
+  bind(namesInput, namesValue);
 
-  dialog.querySelector('#gen-confirm').addEventListener('click', event => {
-    event.preventDefault();
+  dialog.querySelector('#gen-confirm').addEventListener('click', ev => {
+    ev.preventDefault();
 
-    generateRandomGraph(app.graph, {
-      nodeCount: Number(nodesInput.value),
+    const set = generateGraphSet({
+      count:           Number(countInput.value),
+      nodesPerGraph:   Number(nodesInput.value),
       edgeProbability: Number(densityInput.value),
-      layout: layoutInput.value,
-      seed: Number(seedInput.value) || 1,
-      conditions: conditionsInput.checked,
+      namePoolSize:    Number(namesInput.value),
+      seed:            Number(seedInput.value) || 1,
+      conditions:      conditionsInput.checked,
     });
 
-    app.selection = null;
-    app.startNodeId = null;
-    app.pendingFrom = null;
-    app.emit('selection', null);
-    app.afterGraphMutation();
-
+    app.setGraphSet(set);
     dialog.close();
   });
 
-  document.getElementById('btn-generate').addEventListener('click', () => {
-    dialog.showModal();
-  });
+  document.getElementById('btn-generate')
+    .addEventListener('click', () => dialog.showModal());
 }
