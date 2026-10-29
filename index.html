@@ -33,6 +33,11 @@
       <div class="panel-body" id="sources-body"></div>
     </section>
 
+    <section class="panel" id="panel-text">
+      <div class="panel-head"><h2>Text input</h2></div>
+      <div class="panel-body" id="text-body"></div>
+    </section>
+
     <section class="panel" id="panel-tools">
       <div class="panel-head"><h2>Tools</h2></div>
       <div class="panel-body" id="tools-body"></div>
@@ -55,7 +60,14 @@
       <div class="stage-meta" id="stage-meta"></div>
     </div>
 
-    <div class="canvas-host" id="canvas-host"></div>
+    <div class="canvas-host" id="canvas-host">
+      <div class="viewport-controls">
+        <button class="vp-btn" id="vp-zoom-out" title="Zoom out">−</button>
+        <button class="vp-btn" id="vp-zoom-in"  title="Zoom in">+</button>
+        <button class="vp-btn" id="vp-fit"      title="Fit to view">⊡</button>
+        <button class="vp-btn vp-btn-wide" id="vp-reset" title="Reset view">1:1</button>
+      </div>
+    </div>
 
     <div class="timeline" id="timeline"></div>
   </section>
@@ -92,11 +104,6 @@
       <input type="checkbox" id="gen-conditions" checked>
       <span>Attach random time conditions to links</span>
     </label>
-
-    <p class="hint" style="margin-top: 8px;">
-      A small name pool makes graphs share more node names, so more of them
-      merge into a single component. A large pool keeps them fragmented.
-    </p>
 
     <div class="dialog-actions">
       <button value="cancel" class="btn">Cancel</button>

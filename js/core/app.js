@@ -159,7 +159,37 @@ export class App extends Emitter {
 
     this.formulate({ preserveSelection: true });
   }
+    /** Force the pre-merge preview grid to rebuild on the next render. */
+  invalidatePreview() {
+    this._previewCache = null;
+    this._previewOrigin = null;
+  }
 
+  /** Replace the entire graph of an existing source (used by the text editor). */
+  replaceSourceGraph(index, newGraph) {
+    const entry = this.graphSet.graphs[index];
+    if (!entry) return;
+
+    entry.graph = newGraph;
+    this.selection = null;
+    this.pendingFrom = null;
+    this.formulate();
+    // formulate preserves editingSourceIndex — we're still editing this source.
+  }
+
+  /** Append a new source built from an already-constructed Graph. */
+  addSourceFromGraph(newGraph) {
+    const n = this.graphSet.size + 1;
+    this.graphSet.add(newGraph, `Graph ${n}`);
+
+    this.editingSourceIndex = this.graphSet.size - 1;
+    this.selection = null;
+    this.pendingFrom = null;
+    this.startNodeId = null;
+
+    this.formulate();
+  }
+  
   removeSource(index) {
     if (index < 0 || index >= this.graphSet.size) return;
     const id = this.graphSet.graphs[index].id;

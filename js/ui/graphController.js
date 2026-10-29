@@ -1,17 +1,14 @@
 // js/ui/graphController.js
 //
-// All graph mutations flow through here. Mutations target either a source
-// graph (when the user is editing one) or the merged graph. Source mutations
-// re-run formulation so the merged view stays live.
+// Mutations target either a source graph (when editing one) or the merged
+// graph. Positions are no longer clamped to the initial canvas — the graph
+// space is unbounded, and the renderer's fit-to-content handles the framing.
+// Pan/zoom live entirely in svgRenderer and bypass these handlers.
 
 import { CANVAS } from '../config.js';
-import { clamp } from '../util/format.js';
 
 export function attachGraphController(app, renderer) {
-  const editable = () => {
-    if (app.isEditingSource) return true;
-    return app.isFormulated;
-  };
+  const editable = () => app.isEditingSource || app.isFormulated;
 
   const afterMutation = () => {
     if (app.isEditingSource) app.afterSourceMutation();
@@ -19,20 +16,15 @@ export function attachGraphController(app, renderer) {
   };
 
   renderer.on({
-    /* ---------------------------------------------------------------- nodes */
-
     onNodePointerDown(nodeId, point, event) {
-      // Preview mode (t < 1, no source selected): clicking a preview node
-      // jumps into that source graph's editor.
-      if (!editable() && !app.isEditingSource && !app.isFormulated) {
+      // Preview grid: clicking a preview node jumps into that source's editor.
+      if (!editable() && !app.isFormulated) {
         const origin = app._previewOrigin?.get(nodeId);
         if (origin) app.editSource(origin.sourceIndex);
         return false;
       }
-
       if (!editable()) return false;
 
-      // Shift-click to set start node — only meaningful for the merged graph.
       if (event.shiftKey && !app.isEditingSource) {
         app.setStartNode(nodeId);
         return false;
@@ -65,11 +57,8 @@ export function attachGraphController(app, renderer) {
       return true;
     },
 
-    /* ---------------------------------------------------------------- edges */
-
     onEdgePointerDown(edgeId) {
       if (!editable()) return;
-
       if (app.tool === 'erase') {
         app.graph.removeEdge(edgeId);
         afterMutation();
@@ -80,33 +69,16 @@ export function attachGraphController(app, renderer) {
       app.recompute();
     },
 
-    /* ----------------------------------------------------------- background */
-
-        onBackgroundPointerDown(point) {
-      // "Add node" on the empty canvas always targets a *source* graph.
-      //
-      //   – already editing a source  → the normal path below adds to it
-      //   – not editing a source      → spin up a new source that contains
-      //                                 just this node, and enter its editor
-      //
-      // This makes manual graph construction work at any t, including the
-      // pre-formulation window (t < 1) where the canvas shows the preview
-      // grid and nothing is otherwise editable.
+    onBackgroundPointerDown(point) {
+      // Add node on the empty canvas always targets a source graph.
       if (app.tool === 'node' && !app.isEditingSource) {
-        app.addSource({
-          x: clamp(point.x, CANVAS.margin / 2, CANVAS.width - CANVAS.margin / 2),
-          y: clamp(point.y, CANVAS.margin / 2, CANVAS.height - CANVAS.margin / 2),
-        });
+        app.addSource({ x: point.x, y: point.y });
         return;
       }
-
       if (!editable()) return;
 
       if (app.tool === 'node') {
-        const node = app.graph.addNode(
-          clamp(point.x, CANVAS.margin / 2, CANVAS.width - CANVAS.margin / 2),
-          clamp(point.y, CANVAS.margin / 2, CANVAS.height - CANVAS.margin / 2),
-        );
+        const node = app.graph.addNode(point.x, point.y);
         app.selection = { kind: 'node', id: node.id };
         app.emit('selection', app.selection);
         afterMutation();
@@ -124,29 +96,23 @@ export function attachGraphController(app, renderer) {
       if (!editable()) return;
       if (app.tool !== 'select') return;
 
-      const node = app.graph.addNode(
-        clamp(point.x, CANVAS.margin / 2, CANVAS.width - CANVAS.margin / 2),
-        clamp(point.y, CANVAS.margin / 2, CANVAS.height - CANVAS.margin / 2),
-      );
+      const node = app.graph.addNode(point.x, point.y);
       app.selection = { kind: 'node', id: node.id };
       app.emit('selection', app.selection);
       afterMutation();
     },
 
-    /* ------------------------------------------------------------- dragging */
-
     onNodeMove(nodeId, point) {
       if (!editable()) return;
-
       const node = app.graph.node(nodeId);
       if (!node) return;
 
-      node.x = Math.round(clamp(point.x, 26, CANVAS.width - 26));
-      node.y = Math.round(clamp(point.y, 26, CANVAS.height - 26));
+      node.x = Math.round(point.x);
+      node.y = Math.round(point.y);
 
       if (app.isEditingSource) {
-        // Position-only change on a source: invalidate the preview grid so
-        // it re-lays the dragged node next time we leave source-edit mode.
+        // Position-only change — invalidate the cached preview grid so the
+        // node shows at its new position when we leave source-edit mode.
         app.invalidatePreview();
         app.emit('change');
       } else {
