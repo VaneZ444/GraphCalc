@@ -1,48 +1,36 @@
 // js/ui/timeline.js
-//
-// Video-player style transport. Extended with a "formation phase" band:
-// the first segment of the track (from tMin to MERGE_T) is tinted, and a
-// vertical marker shows where the source graphs get formulated into the
-// unified graph. Once the playhead crosses the marker, the marker turns green.
 
 import { h } from '../util/dom.js';
-import { TIMELINE } from '../config.js';
-
-// Must match the MERGE_T constant used inside js/core/app.js.
-const MERGE_T = 1;
+import { TIMELINE, FORMULATION_T } from '../config.js';
 
 const SPEEDS = [0.25, 0.5, 1, 2, 4];
 
 export function createTimeline(app, host) {
-  /* ------------------------------------------------------------- elements */
-
-  const fill  = h('div', { class: 'tl-fill' });
-  const head  = h('div', { class: 'tl-head' });
+  const fill = h('div', { class: 'tl-fill' });
+  const head = h('div', { class: 'tl-head' });
 
   const mergePercent =
-    ((MERGE_T - TIMELINE.min) / (TIMELINE.max - TIMELINE.min)) * 100;
+    ((FORMULATION_T - TIMELINE.min) / (TIMELINE.max - TIMELINE.min)) * 100;
 
   const phaseZone = h('div', {
     class: 'tl-phase-zone',
     style: { width: `${mergePercent}%` },
-    title: 'Formulation phase — source graphs merge at t = 1',
+    title: 'Formulation phase — merges happen here, step by step',
   });
 
   const phaseMark = h('div', {
     class: 'tl-phase-mark',
     style: { left: `${mergePercent}%` },
-    title: 'Formulation completes here (t = 1)',
+    title: 'Formulation completes here (t = 0)',
   });
 
   const track = h('div', { class: 'tl-track' },
     phaseZone, fill, phaseMark, head);
 
-  /* ------------------------------------------------------------- controls */
-
   const playButton    = h('button', { class: 'tl-btn tl-play', title: 'Play / Pause' }, '▶');
   const startButton   = h('button', { class: 'tl-btn', title: 'Jump to start' }, '⏮');
-  const backButton    = h('button', { class: 'tl-btn', title: 'Step back' }, '⏪');
-  const forwardButton = h('button', { class: 'tl-btn', title: 'Step forward' }, '⏩');
+  const backButton    = h('button', { class: 'tl-btn', title: 'Previous step' }, '⏪');
+  const forwardButton = h('button', { class: 'tl-btn', title: 'Next step' }, '⏩');
   const endButton     = h('button', { class: 'tl-btn', title: 'Jump to end' }, '⏭');
   const loopButton    = h('button', { class: 'tl-btn', title: 'Loop' }, '↻');
 
@@ -53,13 +41,11 @@ export function createTimeline(app, host) {
     ...SPEEDS.map(speed =>
       h('option', { value: speed, selected: speed === app.speed }, `${speed}×`)));
 
-  /* ------------------------------------------------------------ behaviour */
-
   playButton.addEventListener('click', () => app.togglePlay());
   startButton.addEventListener('click', () => app.seekStart());
   endButton.addEventListener('click', () => app.seekEnd());
-  backButton.addEventListener('click', () => app.stepBy(-TIMELINE.step));
-  forwardButton.addEventListener('click', () => app.stepBy(TIMELINE.step));
+  backButton.addEventListener('click', () => app.stepBy(-1));
+  forwardButton.addEventListener('click', () => app.stepBy(1));
   loopButton.addEventListener('click', () => app.setLoop(!app.loop));
 
   speedSelect.addEventListener('change', event => {
@@ -89,8 +75,6 @@ export function createTimeline(app, host) {
   track.addEventListener('pointerup', stopSeeking);
   track.addEventListener('pointercancel', stopSeeking);
 
-  /* ---------------------------------------------------------------- sync */
-
   function sync() {
     const ratio = app.progress;
     fill.style.width = `${(ratio * 100).toFixed(2)}%`;
@@ -102,15 +86,12 @@ export function createTimeline(app, host) {
     loopButton.classList.toggle('is-active', app.loop);
     speedSelect.value = String(app.speed);
 
-    // Marker turns green once the playhead crosses the formation tick.
-    phaseMark.classList.toggle('is-passed', app.t >= MERGE_T);
+    phaseMark.classList.toggle('is-passed', app.t >= FORMULATION_T);
   }
 
   app.on('change', sync);
   app.on('transport', sync);
   sync();
-
-  /* ---------------------------------------------------------------- mount */
 
   host.append(
     h('div', { class: 'tl-controls' },

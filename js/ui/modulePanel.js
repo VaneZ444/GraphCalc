@@ -1,3 +1,5 @@
+// js/ui/modulePanel.js
+
 import { h, clear } from '../util/dom.js';
 import { MODULES, getModule } from '../modules/index.js';
 
@@ -28,17 +30,22 @@ export function createModulePanel(app, { titleHost, controlsHost, outputHost }) 
   }
 
   function renderOutput() {
+    const module = app.activeModule;
+    clear(outputHost);
+
     if (!app.isFormulated) {
-      clear(outputHost);
+      const step = app.stepForTime(app.t);
+      const total = app.getTotalSteps();
+      const n = app.graphSet.size;
+
       outputHost.append(
         h('div', { class: 'formulating-note' },
-          `Formulating ${app.graphSet.size} source graph${app.graphSet.size === 1 ? '' : 's'} — ` +
-          'drag the timeline to t ≥ 1 to analyze the merged result.')
+          total === 0
+            ? `Formulating ${n} source graph${n === 1 ? '' : 's'} — no shared node names, so nothing merges.`
+            : `Formulation step ${step} / ${total} — drag the timeline to see the merges happen.`),
       );
       return;
     }
-    const module = app.activeModule;
-    clear(outputHost);
 
     const summary = renderSummary(app.result);
     if (summary) outputHost.append(summary);

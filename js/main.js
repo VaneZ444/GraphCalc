@@ -49,20 +49,26 @@ document.getElementById('vp-reset')    .addEventListener('click', () => renderer
 
 let lastPhase = null;
 let lastSourceIdx = null;
+let lastStep = null;
 
 app.on('change', () => {
   const model = app.renderModel();
   const phase = model.phase;
   const sourceIdx = app.editingSourceIndex;
+  const step = model.step ?? null;
 
   renderer.render(model);
 
-  // Auto-fit whenever the visible target changes: entering/leaving a source
-  // editor, switching between sources, or crossing the formulation tick.
+  // Auto-fit when the *target* changes (not when stepping through formulation).
   if (phase !== lastPhase || sourceIdx !== lastSourceIdx) {
     renderer.fitToContent();
     lastPhase = phase;
     lastSourceIdx = sourceIdx;
+    lastStep = step;
+  } else if (phase === 'formulating' && step !== lastStep) {
+    // Stepping through formulation: re-fit so the merged node is visible.
+    renderer.fitToContent();
+    lastStep = step;
   }
 
   updateStageMeta();
@@ -85,15 +91,17 @@ function updateStageMeta() {
   }
 
   if (!app.isFormulated) {
+    const step = app.stepForTime(app.t);
+    const total = app.getTotalSteps();
     const n = app.graphSet.size;
     meta.textContent =
-      `Formulating: ${n} source graph${n === 1 ? '' : 's'} · ` +
-      `drag to t ≥ 1 to merge, or click a source in the sidebar to edit · t = ${app.t.toFixed(2)}`;
+      `Formulating ${n} source graph${n === 1 ? '' : 's'} · ` +
+      `step ${step}/${total} · t = ${app.t.toFixed(2)}`;
     return;
   }
 
-  const nodes  = app.unifiedGraph.nodes.length;
-  const edges  = app.unifiedGraph.edges.length;
+  const nodes = app.unifiedGraph.nodes.length;
+  const edges = app.unifiedGraph.edges.length;
   const active = [...app.edgeStates.values()].filter(s => s.active).length;
   const components = app.components.length;
   meta.textContent =
@@ -126,4 +134,4 @@ app.setGraphSet(generateGraphSet({
   conditions: true,
 }));
 
-app.setTime(2);
+app.setTime(5);

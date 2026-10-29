@@ -5,10 +5,8 @@ import { Graph } from './graph.js';
 import { GraphSet, combineComponents } from './graphSet.js';
 import { evaluateEdges } from './analysis.js';
 import { MODULES, getModule } from '../modules/index.js';
-import { TIMELINE, CANVAS } from '../config.js';
+import { TIMELINE, CANVAS, FORMULATION_T } from '../config.js';
 import { clamp } from '../util/format.js';
-
-const MERGE_T = 1;
 
 export class App extends Emitter {
   constructor() {
@@ -17,10 +15,13 @@ export class App extends Emitter {
     this.graphSet = new GraphSet();
     this.components = [];
     this.unifiedGraph = new Graph();
+
     this._previewCache = null;
     this._previewOrigin = null;
+    this._formulation = null;
+    this._stepCache = null;
+    this._renderedSources = null;
 
-    /** null = merged view; number = source graph index being edited */
     this.editingSourceIndex = null;
 
     this.t = TIMELINE.min;
@@ -44,10 +45,6 @@ export class App extends Emitter {
 
   /* ------------------------------------------------------- edit target */
 
-  /**
-   * The graph currently being edited on the canvas: a source graph when
-   * the user has entered source-edit mode, otherwise the unified graph.
-   */
   getEditGraph() {
     if (this.editingSourceIndex !== null) {
       return this.graphSet.graphs[this.editingSourceIndex]?.graph || null;
@@ -57,12 +54,9 @@ export class App extends Emitter {
 
   get graph() { return this.getEditGraph() || this.unifiedGraph; }
 
-  get isFormulated() { return this.t >= MERGE_T; }
-
-  /** True when the user is inside a source graph editor. */
+  get isFormulated() { return this.t >= FORMULATION_T; }
   get isEditingSource() { return this.editingSourceIndex !== null; }
 
-  /** Edge states for whatever graph is currently being edited. */
   get currentEdgeStates() {
     if (this.editingSourceIndex === null) return this.edgeStates;
     const g = this.getEditGraph();
@@ -70,12 +64,152 @@ export class App extends Emitter {
     return evaluateEdges(g, this.t);
   }
 
-  /* ------------------------------------------------------- graph set */
-  
-  invalidatePreview() {
-    this._previewCache = null;
-    this._previewOrigin = null;
+  /* ---------------------------------------------------- formulation steps */
+
+  getTotalSteps() {
+    return this._formulation?.sharedLabels?.length ?? 0;
   }
+
+  stepForTime(t) {
+    const N = this.getTotalSteps();
+    if (t >= FORMULATION_T) return N;
+    if (N === 0) return 0;
+    if (t <= TIMELINE.min) return 0;
+    const span = -TIMELINE.min;
+    const progress = (t - TIMELINE.min) / span;
+    return Math.min(N - 1, Math.floor(progress * N));
+  }
+
+  computeFormulationSteps() {
+    const preview = this.sourcePreviewGraph();
+    const origin = this._previewOrigin;
+
+    const byLabel = new Map();
+    for (const node of preview.nodes) {
+      const o = origin.get(node.id);
+      if (!o) continue;
+      const srcGraph = this.graphSet.graphs[o.sourceIndex]?.graph;
+      const srcNode = srcGraph?.node(o.sourceNodeId);
+      if (!srcNode) continue;
+      const label = srcNode.label;
+      if (!byLabel.has(label)) byLabel.set(label, []);
+      byLabel.get(label).push(node.id);
+    }
+
+    const sharedLabels = [...byLabel.entries()]
+      .filter(([, ids]) => ids.length >= 2)
+      .map(([label]) => label)
+      .sort();
+
+    return { preview, origin, byLabel, sharedLabels };
+  }
+
+  /**
+   * Build the graph for formulation step `stepIndex`.
+   *
+   *   step < N   → centroid-based merge: nodes that share an already-applied
+   *                label collapse to the centroid of their source instances.
+   *                This makes the progressive "merge" visible.
+   *
+   *   step >= N  → the final, properly-laid-out merged graph produced by
+   *                combineComponents(). Components are spread across the
+   *                canvas in a grid; nodes within a component are laid out
+   *                in a circle inside that cell. This is what fixes the
+   *                "everything piles up in the middle" problem.
+   */
+  buildGraphAtStep(stepIndex) {
+    if (!this._stepCache) this._stepCache = new Map();
+    if (this._stepCache.has(stepIndex)) return this._stepCache.get(stepIndex);
+
+    const N = this.getTotalSteps();
+
+    // Final state — hand off to the nice component-grid layout.
+    if (N > 0 && stepIndex >= N) {
+      const result = { graph: this.unifiedGraph, nodeSources: new Map() };
+      this._stepCache.set(stepIndex, result);
+      return result;
+    }
+
+    // Intermediate states — centroid-based merge.
+    const { preview, origin, sharedLabels } = this._formulation;
+    const appliedLabels = new Set(sharedLabels.slice(0, stepIndex));
+
+    const classKey = new Map();
+    const classMembers = new Map();
+
+    for (const pvNode of preview.nodes) {
+      const o = origin.get(pvNode.id);
+      if (!o) continue;
+      const srcGraph = this.graphSet.graphs[o.sourceIndex]?.graph;
+      const srcNode = srcGraph?.node(o.sourceNodeId);
+      if (!srcNode) continue;
+
+      const label = srcNode.label;
+      const key = appliedLabels.has(label) ? `L:${label}` : `I:${pvNode.id}`;
+
+      classKey.set(pvNode.id, key);
+      if (!classMembers.has(key)) classMembers.set(key, []);
+      classMembers.get(key).push(pvNode.id);
+    }
+
+    const graph = new Graph();
+    const keyToNodeId = new Map();
+    const nodeSources = new Map();
+
+    for (const [key, members] of classMembers) {
+      let cx = 0, cy = 0;
+      for (const pvId of members) {
+        const pn = preview.node(pvId);
+        cx += pn.x;
+        cy += pn.y;
+      }
+      cx /= members.length;
+      cy /= members.length;
+
+      const firstPvId = members[0];
+      const o = origin.get(firstPvId);
+      const srcGraph = this.graphSet.graphs[o.sourceIndex]?.graph;
+      const srcNode = srcGraph?.node(o.sourceNodeId);
+      const label = srcNode?.label ?? '?';
+
+      const newNode = graph.addNode(cx, cy, label);
+      keyToNodeId.set(key, newNode.id);
+      nodeSources.set(newNode.id, members.length === 1 ? o : null);
+    }
+
+    const reverseOrigin = new Map();
+    for (const [pvId, o] of origin) {
+      reverseOrigin.set(`${o.sourceIndex}:${o.sourceNodeId}`, pvId);
+    }
+
+    const seenEdges = new Set();
+    for (let si = 0; si < this.graphSet.graphs.length; si++) {
+      const entry = this.graphSet.graphs[si];
+      for (const edge of entry.graph.edges) {
+        const fromPv = reverseOrigin.get(`${si}:${edge.from}`);
+        const toPv = reverseOrigin.get(`${si}:${edge.to}`);
+        if (fromPv == null || toPv == null) continue;
+
+        const fromKey = classKey.get(fromPv);
+        const toKey = classKey.get(toPv);
+        if (fromKey === toKey) continue;
+
+        const edgeKey = fromKey < toKey ? `${fromKey}|${toKey}` : `${toKey}|${fromKey}`;
+        if (seenEdges.has(edgeKey)) continue;
+        seenEdges.add(edgeKey);
+
+        const fromId = keyToNodeId.get(fromKey);
+        const toId = keyToNodeId.get(toKey);
+        if (fromId && toId) graph.addEdge(fromId, toId, edge.condition);
+      }
+    }
+
+    const result = { graph, nodeSources };
+    this._stepCache.set(stepIndex, result);
+    return result;
+  }
+
+  /* --------------------------------------------------------- graph set */
 
   setGraphSet(set) {
     this.graphSet = set;
@@ -83,16 +217,25 @@ export class App extends Emitter {
     this.formulate();
   }
 
-  formulate({ preserveSelection = false } = {}) {
-    this.components = this.graphSet.formulate();
-    this.unifiedGraph = combineComponents(this.components, CANVAS);
-    this.invalidatePreview();
-    this.startNodeId = null;
+  invalidatePreview() {
     this._previewCache = null;
     this._previewOrigin = null;
+  }
 
-    // Merged graph IDs are regenerated on every formulation — any
-    // reference into the old unified graph is now stale.
+  formulate({ preserveSelection = false } = {}) {
+    this.components = this.graphSet.formulate();
+
+    this.invalidatePreview();
+    this._stepCache = new Map();
+
+    this._formulation = this.computeFormulationSteps();
+
+    // Final layout — combineComponents spreads each connected component
+    // into its own grid cell and lays that component's nodes in a circle
+    // inside the cell. Without this, the final merged graph would be a
+    // pile of centroids in the middle of the canvas.
+    this.unifiedGraph = combineComponents(this.components, CANVAS);
+
     this.startNodeId = null;
 
     if (!preserveSelection) {
@@ -105,7 +248,6 @@ export class App extends Emitter {
     this.recompute();
   }
 
-  /** Any mutation on a source graph: rebuild the merged graph in place. */
   afterSourceMutation() {
     this.formulate({ preserveSelection: true });
   }
@@ -114,8 +256,10 @@ export class App extends Emitter {
     this.graphSet.clear();
     this.components = [];
     this.unifiedGraph = new Graph();
-    this._previewCache = null;
-    this._previewOrigin = null;
+    this.invalidatePreview();
+    this._formulation = null;
+    this._stepCache = null;
+    this._renderedSources = null;
     this.editingSourceIndex = null;
     this.selection = null;
     this.startNodeId = null;
@@ -127,9 +271,7 @@ export class App extends Emitter {
   /* --------------------------------------------------- source editing */
 
   editSource(index) {
-    if (index !== null) {
-      if (index < 0 || index >= this.graphSet.size) index = null;
-    }
+    if (index !== null && (index < 0 || index >= this.graphSet.size)) index = null;
     this.editingSourceIndex = index;
     this.selection = null;
     this.pendingFrom = null;
@@ -138,13 +280,11 @@ export class App extends Emitter {
     this.recompute();
   }
 
-    addSource(initialNode = null) {
+  addSource(initialNode = null) {
     const g = new Graph();
     let newNode = null;
 
     if (initialNode) {
-      // Pick a label that no other source is using, so the manual node
-      // does not silently merge into an existing auto-generated one.
       const label = this.graphSet.nextUnusedLabel();
       newNode = g.addNode(initialNode.x, initialNode.y, label);
     }
@@ -159,37 +299,26 @@ export class App extends Emitter {
 
     this.formulate({ preserveSelection: true });
   }
-    /** Force the pre-merge preview grid to rebuild on the next render. */
-  invalidatePreview() {
-    this._previewCache = null;
-    this._previewOrigin = null;
-  }
 
-  /** Replace the entire graph of an existing source (used by the text editor). */
   replaceSourceGraph(index, newGraph) {
     const entry = this.graphSet.graphs[index];
     if (!entry) return;
-
     entry.graph = newGraph;
     this.selection = null;
     this.pendingFrom = null;
     this.formulate();
-    // formulate preserves editingSourceIndex — we're still editing this source.
   }
 
-  /** Append a new source built from an already-constructed Graph. */
   addSourceFromGraph(newGraph) {
     const n = this.graphSet.size + 1;
     this.graphSet.add(newGraph, `Graph ${n}`);
-
     this.editingSourceIndex = this.graphSet.size - 1;
     this.selection = null;
     this.pendingFrom = null;
     this.startNodeId = null;
-
     this.formulate();
   }
-  
+
   removeSource(index) {
     if (index < 0 || index >= this.graphSet.size) return;
     const id = this.graphSet.graphs[index].id;
@@ -218,10 +347,10 @@ export class App extends Emitter {
     const next = clamp(value, TIMELINE.min, TIMELINE.max);
     if (next === this.t) return;
 
-    const wasBelow = this.t < MERGE_T;
+    const wasBelow = this.t < FORMULATION_T;
     this.t = next;
 
-    if (wasBelow && next >= MERGE_T && this.editingSourceIndex !== null) {
+    if (wasBelow && next >= FORMULATION_T && this.editingSourceIndex !== null) {
       this.editingSourceIndex = null;
       this.selection = null;
       this.pendingFrom = null;
@@ -241,13 +370,22 @@ export class App extends Emitter {
   togglePlay() { this.playing ? this.pause() : this.play(); }
   setSpeed(s) { this.speed = s; this.emit('transport'); }
   setLoop(b) { this.loop = b; this.emit('transport'); }
-  stepBy(d) { this.pause(); this.setTime(this.t + d); }
+
+  stepBy(d) {
+    this.pause();
+    let stepSize = TIMELINE.step;
+    if (this.t < FORMULATION_T) {
+      const N = this.getTotalSteps();
+      if (N > 0) stepSize = -TIMELINE.min / N;
+    }
+    this.setTime(this.t + d * stepSize);
+  }
+
   seekStart() { this.pause(); this.setTime(TIMELINE.min); }
   seekEnd()   { this.pause(); this.setTime(TIMELINE.max); }
 
   advance(dt) {
     if (!this.playing) return;
-
     let next = this.t + dt * this.speed * TIMELINE.rate;
 
     if (next >= TIMELINE.max) {
@@ -261,10 +399,10 @@ export class App extends Emitter {
       }
     }
 
-    const wasBelow = this.t < MERGE_T;
+    const wasBelow = this.t < FORMULATION_T;
     this.t = next;
 
-    if (wasBelow && next >= MERGE_T && this.editingSourceIndex !== null) {
+    if (wasBelow && next >= FORMULATION_T && this.editingSourceIndex !== null) {
       this.editingSourceIndex = null;
       this.selection = null;
       this.pendingFrom = null;
@@ -300,7 +438,7 @@ export class App extends Emitter {
   }
 
   setStartNode(nodeId) {
-    if (this.editingSourceIndex !== null) return; // not meaningful for sources
+    if (this.editingSourceIndex !== null) return;
     this.startNodeId = nodeId;
     this.emit('selection', this.selection);
     this.recompute();
@@ -338,7 +476,7 @@ export class App extends Emitter {
     const state = this.moduleState[this.tab] ??= { ...(module.defaults || {}) };
     return {
       app: this,
-      graph: this.unifiedGraph,   // algorithms always see the merged graph
+      graph: this.unifiedGraph,
       edgeStates: this.edgeStates,
       t: this.t,
       state,
@@ -421,11 +559,12 @@ export class App extends Emitter {
   /* --------------------------------------------------------- rendering */
 
   renderModel() {
-    // 1) Editing a source graph directly
+    // 1) Source editor
     if (this.editingSourceIndex !== null) {
       const sourceGraph = this.getEditGraph();
       if (sourceGraph) {
         const states = evaluateEdges(sourceGraph, this.t);
+        this._renderedSources = null;
         return {
           graph: sourceGraph,
           edgeStates: states,
@@ -437,19 +576,33 @@ export class App extends Emitter {
       }
     }
 
-    // 2) Pre-merge preview grid
-    if (!this.isFormulated) {
+    // 2) Formulation phase — step-by-step merge.
+    if (this.t < FORMULATION_T) {
+      const step = this.stepForTime(this.t);
+      const { graph, nodeSources } = this.buildGraphAtStep(step);
+      this._renderedSources = nodeSources;
+
+      const view = { nodes: new Map(), edges: new Map() };
+      if (step > 0) {
+        const justMerged = this._formulation.sharedLabels[step - 1];
+        for (const node of graph.nodes) {
+          if (node.label === justMerged) view.nodes.set(node.id, ['is-just-merged']);
+        }
+      }
+
       return {
-        graph: this.sourcePreviewGraph(),
+        graph,
         edgeStates: new Map(),
-        view: { nodes: new Map(), edges: new Map() },
+        view,
         tool: 'select',
         t: this.t,
         phase: 'formulating',
+        step,
       };
     }
 
-    // 3) Merged view
+    // 3) Merged view — algorithms run on the fully laid-out graph.
+    this._renderedSources = null;
     return {
       graph: this.unifiedGraph,
       edgeStates: this.edgeStates,

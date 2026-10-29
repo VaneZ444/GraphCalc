@@ -1,9 +1,4 @@
 // js/ui/graphController.js
-//
-// Mutations target either a source graph (when editing one) or the merged
-// graph. Positions are no longer clamped to the initial canvas — the graph
-// space is unbounded, and the renderer's fit-to-content handles the framing.
-// Pan/zoom live entirely in svgRenderer and bypass these handlers.
 
 import { CANVAS } from '../config.js';
 
@@ -17,10 +12,10 @@ export function attachGraphController(app, renderer) {
 
   renderer.on({
     onNodePointerDown(nodeId, point, event) {
-      // Preview grid: clicking a preview node jumps into that source's editor.
+      // Preview / formulation: only unmerged nodes carry source info.
       if (!editable() && !app.isFormulated) {
-        const origin = app._previewOrigin?.get(nodeId);
-        if (origin) app.editSource(origin.sourceIndex);
+        const info = app._renderedSources?.get(nodeId);
+        if (info) app.editSource(info.sourceIndex);
         return false;
       }
       if (!editable()) return false;
@@ -70,7 +65,6 @@ export function attachGraphController(app, renderer) {
     },
 
     onBackgroundPointerDown(point) {
-      // Add node on the empty canvas always targets a source graph.
       if (app.tool === 'node' && !app.isEditingSource) {
         app.addSource({ x: point.x, y: point.y });
         return;
@@ -111,8 +105,6 @@ export function attachGraphController(app, renderer) {
       node.y = Math.round(point.y);
 
       if (app.isEditingSource) {
-        // Position-only change — invalidate the cached preview grid so the
-        // node shows at its new position when we leave source-edit mode.
         app.invalidatePreview();
         app.emit('change');
       } else {

@@ -1,3 +1,5 @@
+// js/config.js
+
 export const CANVAS = {
   width: 1000,
   height: 640,
@@ -6,13 +8,19 @@ export const CANVAS = {
 };
 
 export const TIMELINE = {
-  min: 0,
+  min: -10,
   max: 10,
-  step: 0.25,     // one evaluation quantum
-  rate: 1,        // units per second at speed 1x
+  step: 0.25,
+  rate: 1,
 };
 
+/**
+ * Time at which formulation completes. Everything below is the step-by-step
+ * merge animation; everything above runs the algorithm on the merged graph.
+ */
+export const FORMULATION_T = 0;
+
 export const INFECTION = {
-  steps: 24,      // simulation steps spread across the whole timeline
+  steps: 24,
   recoveryTime: 3,
 };

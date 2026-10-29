@@ -1015,3 +1015,10 @@ input[type="range"] {
   .stage { flex: 1; min-height: 0; }
   .brand-name { display: none; }
 }
+
+/* Just-merged node — softly highlighted during the formulation animation */
+.node.is-just-merged .node-body {
+  fill: var(--accent-soft);
+  stroke: var(--accent);
+  stroke-width: 3;
+}
