@@ -1,3 +1,5 @@
+// js/ui/toolbar.js
+
 import { h } from '../util/dom.js';
 
 const TOOLS = [
@@ -34,6 +36,31 @@ export function createToolbar(app, host) {
   app.on('tool', sync);
   sync();
 
-  host.append(h('div', { class: 'tool-group' }, ...buttons), hint);
+  /* --- Node radius slider ------------------------------------------- */
+
+  const radiusValue  = h('span', { class: 'field-value' }, String(app.nodeRadius));
+  const radiusLabel  = h('label', { class: 'field-label' }, 'Node radius ', radiusValue);
+  const radiusSlider = h('input', {
+    type: 'range',
+    min: 8,
+    max: 32,
+    step: 1,
+    value: app.nodeRadius,
+    oninput: event => {
+      const v = parseInt(event.target.value, 10);
+      radiusValue.textContent = String(v);
+      app.setNodeRadius(v);
+    },
+  });
+
+  host.append(
+    h('div', { class: 'tool-group' }, ...buttons),
+    hint,
+    h('div', { class: 'stack', style: { marginTop: '14px' } },
+      radiusLabel,
+      radiusSlider,
+    ),
+  );
+
   return host;
 }

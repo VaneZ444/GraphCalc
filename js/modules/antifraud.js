@@ -84,9 +84,12 @@ export const antifraudModule = {
     };
   },
 
-  renderOutput(result, ctx) {
-    const output = result.output;
-    if (!output) return h('div');
+    renderOutput(result, ctx) {
+    const output = result?.output;
+
+    if (!output) {
+      return h('div', { class: 'hint' }, '—');
+    }
 
     if (output.type === 'empty') {
       return h('p', { class: 'hint' }, 'The graph is empty.');
@@ -94,6 +97,16 @@ export const antifraudModule = {
 
     if (output.type === 'error') {
       return h('p', { class: 'hint', style: { color: 'var(--err)' } }, output.message);
+    }
+
+    // Stale result from a previous tab — recompute() will catch up shortly.
+    if (output.type !== 'risk') {
+      return h('p', { class: 'hint' }, 'Waiting for analysis…');
+    }
+
+    const rows = output.rows || [];
+    if (rows.length === 0) {
+      return h('p', { class: 'hint' }, 'No nodes to score.');
     }
 
     const labelOf = id => ctx.graph.node(id)?.label ?? `#${id}`;
@@ -106,7 +119,7 @@ export const antifraudModule = {
         h('th', {}, 'Deg'),
         h('th', {}, ''),
       )),
-      h('tbody', {}, ...output.rows.slice(0, 14).map(row => {
+      h('tbody', {}, ...rows.slice(0, 14).map(row => {
         const level = row.score >= threshold ? 'is-high'
           : row.score >= threshold * 0.6 ? 'is-mid' : '';
 

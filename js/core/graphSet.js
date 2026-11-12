@@ -67,6 +67,127 @@ export class GraphSet {
    *   - if the same link (by label pair) exists in two source graphs with
    *     different conditions, only the first condition is kept.
    */
+  buildGraphAtStep(stepIndex) {
+    if (!this._stepCache) this._stepCache = new Map();
+    if (this._stepCache.has(stepIndex)) return this._stepCache.get(stepIndex);
+
+    const N = this.getTotalSteps();
+    const { preview, origin, byLabel, sharedLabels } = this._formulation;
+    const appliedLabels = new Set(sharedLabels.slice(0, stepIndex));
+
+    // --- 1. Топология: сгруппировать preview-вершины по merge-классам ---
+    const classKey = new Map();
+    const classMembers = new Map();
+
+    for (const pvNode of preview.nodes) {
+      const o = origin.get(pvNode.id);
+      if (!o) continue;
+      const srcGraph = this.graphSet.graphs[o.sourceIndex]?.graph;
+      const srcNode = srcGraph?.node(o.sourceNodeId);
+      if (!srcNode) continue;
+
+      const label = srcNode.label;
+      const key = appliedLabels.has(label) ? `L:${label}` : `I:${pvNode.id}`;
+
+      classKey.set(pvNode.id, key);
+      if (!classMembers.has(key)) classMembers.set(key, []);
+      classMembers.get(key).push(pvNode.id);
+    }
+
+    const graph = new Graph();
+    const keyToNodeId = new Map();
+    const nodeSources = new Map();
+
+    for (const [key, members] of classMembers) {
+      const firstPvId = members[0];
+      const o = origin.get(firstPvId);
+      const srcGraph = this.graphSet.graphs[o.sourceIndex]?.graph;
+      const srcNode = srcGraph?.node(o.sourceNodeId);
+      const label = srcNode?.label ?? '?';
+
+      const newNode = graph.addNode(0, 0, label);
+      keyToNodeId.set(key, newNode.id);
+      nodeSources.set(newNode.id, members.length === 1 ? o : null);
+    }
+
+    // --- 2. Рёбра из всех исходных графов ---
+    const reverseOrigin = new Map();
+    for (const [pvId, o] of origin) {
+      reverseOrigin.set(`${o.sourceIndex}:${o.sourceNodeId}`, pvId);
+    }
+
+    const seenEdges = new Set();
+    for (let si = 0; si < this.graphSet.graphs.length; si++) {
+      const entry = this.graphSet.graphs[si];
+      for (const edge of entry.graph.edges) {
+        const fromPv = reverseOrigin.get(`${si}:${edge.from}`);
+        const toPv   = reverseOrigin.get(`${si}:${edge.to}`);
+        if (fromPv == null || toPv == null) continue;
+
+        const fromKey = classKey.get(fromPv);
+        const toKey   = classKey.get(toPv);
+        if (fromKey === toKey) continue;
+
+        const edgeKey = fromKey < toKey ? `${fromKey}|${toKey}` : `${toKey}|${fromKey}`;
+        if (seenEdges.has(edgeKey)) continue;
+        seenEdges.add(edgeKey);
+
+        const fromId = keyToNodeId.get(fromKey);
+        const toId   = keyToNodeId.get(toKey);
+        if (fromId && toId) graph.addEdge(fromId, toId, edge.condition);
+      }
+    }
+
+    // --- 3. Анкеры: позиция ПЕРВОГО (по индексу источника) экземпляра ---
+    //
+    // Именно тут мы уходим от «центроид собирает всё в центр». Каждая вершина
+    // привязана к одному конкретному месту из preview — туда, где живёт её
+    // «главный» экземпляр. Остальные экземпляры (из других графов) подтянутся
+    // к ней через силу рёбер, но анкер тянет обратно → перекос в центр исчезает.
+    const anchors = new Map();
+    for (const node of graph.nodes) {
+      const instances = byLabel.get(node.label) || [];
+      let chosenPvId = null;
+      let chosenSourceIndex = Infinity;
+
+      for (const pvId of instances) {
+        const o = origin.get(pvId);
+        if (!o) continue;
+        if (o.sourceIndex < chosenSourceIndex) {
+          chosenSourceIndex = o.sourceIndex;
+          chosenPvId = pvId;
+        }
+      }
+
+      if (chosenPvId !== null) {
+        const pvNode = preview.node(chosenPvId);
+        if (pvNode) anchors.set(node.id, { x: pvNode.x, y: pvNode.y });
+      }
+    }
+
+    // Стартуем из анкеров
+    for (const node of graph.nodes) {
+      const a = anchors.get(node.id);
+      if (a) { node.x = a.x; node.y = a.y; }
+    }
+
+    // --- 4. Force-directed ---
+    //
+    // step 0  → всё уже на своих местах (preview), не запускаем.
+    // step k  → homeStrength плавно падает с 1 до 0.05, кусочки постепенно
+    //           подтягиваются друг к другу, но анкеры не дают им «слипнуться».
+    // step N  → homeStrength = 0.05, максимальное стягивание, но отталкивание
+    //           разводит перекрытия.
+    if (stepIndex > 0 && N > 0) {
+      const homeStrength = 1 - (stepIndex / N) * 0.95;
+      forceDirectedLayout(graph, anchors, { homeStrength });
+      fitToCanvas(graph, CANVAS);
+    }
+
+    const result = { graph, nodeSources };
+    this._stepCache.set(stepIndex, result);
+    return result;
+  }
   formulate() {
     // 1. Index every label across every source graph.
     const occurrences = new Map(); // label -> [{ graphId, node }]

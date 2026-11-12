@@ -4,6 +4,10 @@ import { buildAdjacency, evaluateEdges } from '../core/analysis.js';
 import { mulberry32 } from '../util/random.js';
 import { TIMELINE } from '../config.js';
 
+// Должно совпадать с FORMULATION_T в config.js / app.js.
+// Симуляция инфекции идёт только по пост-формуляционной части таймлайна.
+const FORMULATION_T = 0;
+
 export const infectionModule = {
   id: 'infection',
   label: 'Infection',
@@ -25,8 +29,9 @@ export const infectionModule = {
         requestUpdate();
       }),
       h('p', { class: 'hint' },
-        'SIR model over the currently active links. Scrub the timeline to ' +
-        'walk through the epidemic — the result is fully deterministic for a given seed.'),
+        'SIR model over the currently active links. The simulation starts at ' +
+        'the end of formulation (t = 0) and runs to the end of the timeline. ' +
+        'The result is fully deterministic for a given seed.'),
     );
   },
 
@@ -39,11 +44,15 @@ export const infectionModule = {
     }
 
     const frames = simulate(graph, state);
+
+    // Симуляция покрывает только [FORMULATION_T, TIMELINE.max].
+    // t < FORMULATION_T (фаза формулировки) — показываем кадр 0.
+    const span = TIMELINE.max - FORMULATION_T;
+    const positiveT = Math.max(0, t - FORMULATION_T);
+    const progress = span > 0 ? positiveT / span : 0;
     const index = Math.min(
       frames.length - 1,
-      Math.max(0, Math.round(
-        ((t - TIMELINE.min) / (TIMELINE.max - TIMELINE.min)) * (frames.length - 1)
-      )),
+      Math.max(0, Math.round(progress * (frames.length - 1))),
     );
     const frame = frames[index];
 
@@ -52,7 +61,7 @@ export const infectionModule = {
       else if (status === 'R') nodes.set(id, ['is-recovered']);
     }
 
-    // Highlight the transmission routes out of currently infectious nodes.
+    // Подсвечиваем маршруты передачи из текущих заражённых нод.
     const adjacency = buildAdjacency(graph, edgeStates);
     for (const edge of graph.edges) {
       const edgeState = edgeStates.get(edge.id);
@@ -80,8 +89,11 @@ export const infectionModule = {
   },
 
   renderOutput(result, ctx) {
-    const output = result.output;
-    if (!output) return h('div');
+    const output = result?.output;
+
+    if (!output) {
+      return h('div', { class: 'hint' }, '—');
+    }
 
     if (output.type === 'empty') {
       return h('p', { class: 'hint' }, 'The graph is empty.');
@@ -91,13 +103,30 @@ export const infectionModule = {
       return h('p', { class: 'hint', style: { color: 'var(--err)' } }, output.message);
     }
 
+    // Stale result from a previous tab — recompute() will catch up shortly.
+    if (output.type !== 'sir') {
+      return h('p', { class: 'hint' }, 'Waiting for simulation…');
+    }
+
+    const frames = output.frames || [];
+    if (frames.length === 0) {
+      return h('p', { class: 'hint' }, 'No simulation frames yet.');
+    }
+
     const labelOf = id => ctx.graph.node(id)?.label ?? `#${id}`;
 
+    const MAX_LIST = 12;
+    const infected = output.infectedIds || [];
+    const preview = infected.slice(0, MAX_LIST).map(labelOf).join(', ');
+    const extra = infected.length > MAX_LIST
+      ? ` … and ${infected.length - MAX_LIST} more`
+      : '';
+
     return h('div', {},
-      sparkline(output.frames, output.index),
+      sparkline(frames, output.index ?? 0),
       h('p', { class: 'hint', style: { marginTop: '8px' } },
-        output.infectedIds.length
-          ? 'Currently infected: ' + output.infectedIds.map(labelOf).join(', ')
+        infected.length
+          ? 'Currently infected: ' + preview + extra
           : 'No active infections at this point in time.'),
     );
   },
@@ -109,16 +138,20 @@ function simulate(graph, options) {
   const steps = 24;
   const rng = mulberry32(options.seed);
 
-  // Pre-compute the active adjacency at each simulation step.
+  // Семплируем ТОЛЬКО пост-формуляционную часть таймлайна:
+  //   t = FORMULATION_T  …  TIMELINE.max
+  // Раньше был [TIMELINE.min, TIMELINE.max], и негативная половина
+  // (фаза формулировки) съедала половину симуляции.
   const adjacencyByStep = [];
+  const span = TIMELINE.max - FORMULATION_T;
   for (let step = 0; step <= steps; step++) {
-    const t = TIMELINE.min + (step / steps) * (TIMELINE.max - TIMELINE.min);
+    const t = FORMULATION_T + (step / steps) * span;
     adjacencyByStep.push(buildAdjacency(graph, evaluateEdges(graph, t)));
   }
 
   const status = new Map(graph.nodes.map(node => [node.id, 'S']));
 
-  // Pick initial infected deterministically.
+  // Детерминированный выбор изначально заражённых.
   const pool = graph.nodes.map(n => n.id);
   const initial = [];
   for (let i = 0; i < Math.min(options.initialCount, pool.length); i++) {
@@ -134,7 +167,7 @@ function simulate(graph, options) {
     const previous = new Map(status);
     const next = new Map(previous);
 
-    // Transmission: each infectious node can infect susceptible neighbours.
+    // Передача: каждая заражённая нода может заразить восприимчивых соседей.
     for (const [id, state] of previous) {
       if (state !== 'I') continue;
       for (const { to } of adjacency.get(id) || []) {
@@ -142,8 +175,8 @@ function simulate(graph, options) {
       }
     }
 
-    // Recovery: based on the *previous* state, so newly infected nodes
-    // survive at least one full step before they can recover.
+    // Восстановление — по *предыдущему* состоянию, чтобы только что
+    // заражённые прожили хотя бы один полный шаг.
     for (const [id, state] of previous) {
       if (state === 'I' && rng() < options.gamma) next.set(id, 'R');
     }
@@ -172,20 +205,43 @@ function snapshot(status, step) {
 /* --------------------------------------------------------------- helpers */
 
 function sparkline(frames, currentIndex) {
+  if (!frames || frames.length === 0) return h('div');
+
+  if (frames.length === 1) {
+    // Один кадр — плоская линия, чтобы не делить на 0.
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('class', 'sparkline');
+    svg.setAttribute('viewBox', '0 0 300 54');
+    svg.setAttribute('preserveAspectRatio', 'none');
+
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    line.setAttribute('x1', '0');
+    line.setAttribute('x2', '300');
+    line.setAttribute('y1', '27');
+    line.setAttribute('y2', '27');
+    line.setAttribute('stroke', '#2563eb');
+    line.setAttribute('stroke-width', '2');
+    line.setAttribute('vector-effect', 'non-scaling-stroke');
+
+    svg.append(line);
+    return svg;
+  }
+
   const width = 300;
   const height = 54;
-  const maxInfected = Math.max(1, ...frames.map(f => f.infected));
+  const maxInfected = Math.max(1, ...frames.map(f => f.infected || 0));
   const count = frames.length;
+  const safeIndex = Math.max(0, Math.min(count - 1, currentIndex | 0));
 
   const points = frames
     .map((frame, index) => {
       const x = (index / (count - 1)) * width;
-      const y = height - 4 - (frame.infected / maxInfected) * (height - 10);
+      const y = height - 4 - ((frame.infected || 0) / maxInfected) * (height - 10);
       return `${x.toFixed(1)},${y.toFixed(1)}`;
     })
     .join(' ');
 
-  const markerX = (currentIndex / (count - 1)) * width;
+  const markerX = (safeIndex / (count - 1)) * width;
 
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   svg.setAttribute('class', 'sparkline');

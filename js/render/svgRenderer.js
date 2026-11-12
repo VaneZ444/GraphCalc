@@ -112,6 +112,10 @@ export class SVGRenderer extends Renderer {
     const { graph, view } = model;
     const alive = new Set();
 
+    const radius    = model.nodeRadius || CANVAS.nodeRadius;
+    const hitRadius = radius + 8;
+    const fontSize  = Math.max(11, Math.min(16, radius * 0.72));
+
     for (const node of graph.nodes) {
       alive.add(node.id);
 
@@ -131,8 +135,13 @@ export class SVGRenderer extends Renderer {
         el.setAttribute('cx', node.x);
         el.setAttribute('cy', node.y);
       }
+
+      hit.setAttribute('r', hitRadius);
+      body.setAttribute('r', radius);
+
       label.setAttribute('x', node.x);
       label.setAttribute('y', node.y);
+      label.style.fontSize = fontSize + 'px';
       label.textContent = node.label;
     }
 

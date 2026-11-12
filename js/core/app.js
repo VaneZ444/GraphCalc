@@ -7,11 +7,12 @@ import { evaluateEdges } from './analysis.js';
 import { MODULES, getModule } from '../modules/index.js';
 import { TIMELINE, CANVAS, FORMULATION_T } from '../config.js';
 import { clamp } from '../util/format.js';
+import { incrementalRigidLayout, fitToCanvas } from './layout.js';
 
 export class App extends Emitter {
   constructor() {
     super();
-
+    this.nodeRadius = 14;
     this.graphSet = new GraphSet();
     this.components = [];
     this.unifiedGraph = new Graph();
@@ -79,10 +80,14 @@ export class App extends Emitter {
     const progress = (t - TIMELINE.min) / span;
     return Math.min(N - 1, Math.floor(progress * N));
   }
-
   computeFormulationSteps() {
     const preview = this.sourcePreviewGraph();
     const origin = this._previewOrigin;
+
+    const pvBySource = new Map();
+    for (const [pvId, o] of origin) {
+      pvBySource.set(`${o.sourceIndex}:${o.sourceNodeId}`, pvId);
+    }
 
     const byLabel = new Map();
     for (const node of preview.nodes) {
@@ -91,9 +96,8 @@ export class App extends Emitter {
       const srcGraph = this.graphSet.graphs[o.sourceIndex]?.graph;
       const srcNode = srcGraph?.node(o.sourceNodeId);
       if (!srcNode) continue;
-      const label = srcNode.label;
-      if (!byLabel.has(label)) byLabel.set(label, []);
-      byLabel.get(label).push(node.id);
+      if (!byLabel.has(srcNode.label)) byLabel.set(srcNode.label, []);
+      byLabel.get(srcNode.label).push(node.id);
     }
 
     const sharedLabels = [...byLabel.entries()]
@@ -101,7 +105,7 @@ export class App extends Emitter {
       .map(([label]) => label)
       .sort();
 
-    return { preview, origin, byLabel, sharedLabels };
+    return { preview, origin, byLabel, sharedLabels, pvBySource };
   }
 
   /**
@@ -122,31 +126,21 @@ export class App extends Emitter {
     if (this._stepCache.has(stepIndex)) return this._stepCache.get(stepIndex);
 
     const N = this.getTotalSteps();
-
-    // Final state — hand off to the nice component-grid layout.
-    if (N > 0 && stepIndex >= N) {
-      const result = { graph: this.unifiedGraph, nodeSources: new Map() };
-      this._stepCache.set(stepIndex, result);
-      return result;
-    }
-
-    // Intermediate states — centroid-based merge.
-    const { preview, origin, sharedLabels } = this._formulation;
+    const { preview, origin, byLabel, sharedLabels, pvBySource } = this._formulation;
     const appliedLabels = new Set(sharedLabels.slice(0, stepIndex));
 
+    // 1. Топология: группируем preview-инстансы по merge-классам
     const classKey = new Map();
     const classMembers = new Map();
-
     for (const pvNode of preview.nodes) {
       const o = origin.get(pvNode.id);
       if (!o) continue;
       const srcGraph = this.graphSet.graphs[o.sourceIndex]?.graph;
       const srcNode = srcGraph?.node(o.sourceNodeId);
       if (!srcNode) continue;
-
-      const label = srcNode.label;
-      const key = appliedLabels.has(label) ? `L:${label}` : `I:${pvNode.id}`;
-
+      const key = appliedLabels.has(srcNode.label)
+        ? `L:${srcNode.label}`
+        : `I:${pvNode.id}`;
       classKey.set(pvNode.id, key);
       if (!classMembers.has(key)) classMembers.set(key, []);
       classMembers.get(key).push(pvNode.id);
@@ -154,34 +148,36 @@ export class App extends Emitter {
 
     const graph = new Graph();
     const keyToNodeId = new Map();
+    const pvToGraphNode = new Map();
     const nodeSources = new Map();
+    const nodePrimaryPreview = new Map();
 
     for (const [key, members] of classMembers) {
-      let cx = 0, cy = 0;
-      for (const pvId of members) {
-        const pn = preview.node(pvId);
-        cx += pn.x;
-        cy += pn.y;
-      }
-      cx /= members.length;
-      cy /= members.length;
-
       const firstPvId = members[0];
-      const o = origin.get(firstPvId);
-      const srcGraph = this.graphSet.graphs[o.sourceIndex]?.graph;
-      const srcNode = srcGraph?.node(o.sourceNodeId);
-      const label = srcNode?.label ?? '?';
+      const o0 = origin.get(firstPvId);
+      const srcGraph0 = this.graphSet.graphs[o0.sourceIndex]?.graph;
+      const label = srcGraph0?.node(o0.sourceNodeId)?.label ?? '?';
 
-      const newNode = graph.addNode(cx, cy, label);
+      let primaryPvId = firstPvId;
+      let bestIdx = o0.sourceIndex;
+      for (const pvId of members) {
+        const oo = origin.get(pvId);
+        if (oo && oo.sourceIndex < bestIdx) { bestIdx = oo.sourceIndex; primaryPvId = pvId; }
+      }
+
+      const newNode = graph.addNode(0, 0, label);
       keyToNodeId.set(key, newNode.id);
-      nodeSources.set(newNode.id, members.length === 1 ? o : null);
+      nodeSources.set(newNode.id, members.length === 1 ? o0 : null);
+      nodePrimaryPreview.set(newNode.id, preview.node(primaryPvId));
+
+      for (const pvId of members) pvToGraphNode.set(pvId, newNode.id);
     }
 
+    // 2. Рёбра
     const reverseOrigin = new Map();
     for (const [pvId, o] of origin) {
       reverseOrigin.set(`${o.sourceIndex}:${o.sourceNodeId}`, pvId);
     }
-
     const seenEdges = new Set();
     for (let si = 0; si < this.graphSet.graphs.length; si++) {
       const entry = this.graphSet.graphs[si];
@@ -189,27 +185,37 @@ export class App extends Emitter {
         const fromPv = reverseOrigin.get(`${si}:${edge.from}`);
         const toPv = reverseOrigin.get(`${si}:${edge.to}`);
         if (fromPv == null || toPv == null) continue;
-
         const fromKey = classKey.get(fromPv);
         const toKey = classKey.get(toPv);
         if (fromKey === toKey) continue;
-
         const edgeKey = fromKey < toKey ? `${fromKey}|${toKey}` : `${toKey}|${fromKey}`;
         if (seenEdges.has(edgeKey)) continue;
         seenEdges.add(edgeKey);
-
         const fromId = keyToNodeId.get(fromKey);
         const toId = keyToNodeId.get(toKey);
         if (fromId && toId) graph.addEdge(fromId, toId, edge.condition);
       }
     }
 
-    const result = { graph, nodeSources };
-    this._stepCache.set(stepIndex, result);
-    return result;
+  // 3. Layout
+  if (stepIndex === 0) {
+    for (const node of graph.nodes) {
+      const pv = nodePrimaryPreview.get(node.id);
+      if (pv) { node.x = pv.x; node.y = pv.y; }
+    }
+  } else {
+    incrementalRigidLayout(graph, {
+      preview, pvBySource, pvToGraphNode,
+      nodePrimaryPreview, graphSet: this.graphSet,
+      appliedLabels, canvas: CANVAS,
+      nodeRadius: this.nodeRadius,
+    });
   }
 
-  /* --------------------------------------------------------- graph set */
+  const result = { graph, nodeSources };
+  this._stepCache.set(stepIndex, result);
+  return result;
+}
 
   setGraphSet(set) {
     this.graphSet = set;
@@ -230,11 +236,11 @@ export class App extends Emitter {
 
     this._formulation = this.computeFormulationSteps();
 
-    // Final layout — combineComponents spreads each connected component
-    // into its own grid cell and lays that component's nodes in a circle
-    // inside the cell. Without this, the final merged graph would be a
-    // pile of centroids in the middle of the canvas.
-    this.unifiedGraph = combineComponents(this.components, CANVAS);
+    // Раньше здесь был combineComponents(...) — это давало прыжок
+    // при t=0. Теперь финальный граф = последний шаг формулировки,
+    // переход бесшовный.
+    const N = this.getTotalSteps();
+    this.unifiedGraph = this.buildGraphAtStep(N).graph;
 
     this.startNodeId = null;
 
@@ -414,23 +420,25 @@ export class App extends Emitter {
 
   /* -------------------------------------------------------------- tabs */
 
-  setTab(id) {
+    setTab(id) {
     if (id === this.tab) return;
     this.tab = id;
-    this.emit('tab', id);
-    this.recompute();
+    this.recompute();       // сначала обновляем app.result под новый модуль
+    this.emit('tab', id);   // потом уведомляем слушателей (controls + output)
   }
   get activeModule() { return getModule(this.tab); }
 
   /* ----------------------------------------------------------- editing */
-
   setTool(tool) {
     this.tool = tool;
     this.pendingFrom = null;
     this.emit('tool', tool);
     this.recompute();
   }
-
+  setNodeRadius(r) {
+    this.nodeRadius = r;
+    this.emit('change');
+  }
   select(selection) {
     this.selection = selection;
     this.emit('selection', selection);
@@ -559,6 +567,8 @@ export class App extends Emitter {
   /* --------------------------------------------------------- rendering */
 
   renderModel() {
+    const nodeRadius = this.nodeRadius;
+
     // 1) Source editor
     if (this.editingSourceIndex !== null) {
       const sourceGraph = this.getEditGraph();
@@ -572,11 +582,12 @@ export class App extends Emitter {
           tool: this.tool,
           t: this.t,
           phase: 'edit-source',
+          nodeRadius,
         };
       }
     }
 
-    // 2) Formulation phase — step-by-step merge.
+    // 2) Formulation
     if (this.t < FORMULATION_T) {
       const step = this.stepForTime(this.t);
       const { graph, nodeSources } = this.buildGraphAtStep(step);
@@ -598,10 +609,11 @@ export class App extends Emitter {
         t: this.t,
         phase: 'formulating',
         step,
+        nodeRadius,
       };
     }
 
-    // 3) Merged view — algorithms run on the fully laid-out graph.
+    // 3) Merged
     this._renderedSources = null;
     return {
       graph: this.unifiedGraph,
@@ -610,6 +622,7 @@ export class App extends Emitter {
       tool: this.tool,
       t: this.t,
       phase: 'merged',
+      nodeRadius,
     };
   }
 
@@ -625,17 +638,46 @@ export class App extends Emitter {
       return preview;
     }
 
+    // Компактная preview-сетка в центральных 70% канваса:
+    // самое большое расстояние от якоря до мелкого графа ≈ половина
+    // предыдущего. Именно это убирает «перелёт через пол экрана».
+    const regionW = CANVAS.width * 0.7;
+    const regionH = CANVAS.height * 0.7;
+    const offsetX = (CANVAS.width - regionW) / 2;
+    const offsetY = (CANVAS.height - regionH) / 2;
+
     const cols = Math.ceil(Math.sqrt(graphs.length));
     const rows = Math.ceil(graphs.length / cols);
-    const cellW = CANVAS.width / cols;
-    const cellH = CANVAS.height / rows;
-    const pad = 42;
+    const cellW = regionW / cols;
+    const cellH = regionH / rows;
 
-    graphs.forEach((entry, i) => {
-      const col = i % cols;
-      const row = Math.floor(i / cols);
-      const cx = col * cellW + cellW / 2;
-      const cy = row * cellH + cellH / 2;
+    // Сортируем ячейки по расстоянию от центра сетки — самые большие графы
+    // уходят в центр, мелкие — по краям.
+    const gridCx = offsetX + regionW / 2;
+    const gridCy = offsetY + regionH / 2;
+    const cells = [];
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const cx = offsetX + c * cellW + cellW / 2;
+        const cy = offsetY + r * cellH + cellH / 2;
+        cells.push({ cx, cy, d: Math.hypot(cx - gridCx, cy - gridCy) });
+      }
+    }
+    cells.sort((a, b) => a.d - b.d);
+
+    // Графы сортируем по размеру убыв. — самый большой получает
+    // центральную ячейку.
+    const indexed = graphs.map((g, i) => ({ g, i, size: g.graph.nodes.length }));
+    indexed.sort((a, b) => b.size - a.size || a.i - b.i);
+
+    const pad = 36;
+
+    indexed.forEach((item, rank) => {
+      const cell = cells[rank];
+      if (!cell) return;
+      const { cx, cy } = cell;
+      const srcIdx = item.i;
+      const entry = graphs[srcIdx];
       const radius = Math.min(cellW, cellH) / 2 - pad;
 
       const localMap = new Map();
@@ -652,7 +694,7 @@ export class App extends Emitter {
         }
         const un = preview.addNode(x, y, node.label);
         localMap.set(node.id, un.id);
-        originMap.set(un.id, { sourceIndex: i, sourceNodeId: node.id });
+        originMap.set(un.id, { sourceIndex: srcIdx, sourceNodeId: node.id });
       });
 
       for (const edge of entry.graph.edges) {
