@@ -104,8 +104,14 @@ export function incrementalRigidLayout(graph, ctx) {
     if (pairs.length === 0) {
       transforms[si] = { cos: 1, sin: 0, tx: 0, ty: 0 };
     } else if (pairs.length === 1) {
-      const p = pairs[0];
-      transforms[si] = { cos: 1, sin: 0, tx: p.tx - p.lx, ty: p.ty - p.ly };
+    // Kabsch не может посчитать поворот по одной точке — пробуем
+    // 8 углов (45° шаг) и берём тот, где меньше всего наложений.
+    // Предпочтение отдаём меньшим углам.
+    transforms[si] = bestRotationForSingleShared(
+        si, sg, pairs[0],
+        transforms, order, graphSet, pvBySource, preview,
+        graph, /* placedNodeIds: */ null,
+    );
     } else {
       transforms[si] = kabsch(pairs);
     }
@@ -307,6 +313,19 @@ function resolveOverlaps(graph, graphOfNode, anchorSi, minNodeSep, nodeRadius) {
     }
 
     if (!moved) break;
+    const maxDeviation = nodeRadius * 3;
+    for (const node of graph.nodes) {
+        const home = homeMap.get(node.id);
+        if (!home) continue;
+        const dx = node.x - home.x;
+        const dy = node.y - home.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist > maxDeviation) {
+        const k = maxDeviation / dist;
+        node.x = home.x + dx * k;
+        node.y = home.y + dy * k;
+        }
+    }
   }
 
   /* ---------- Cleanup: тянем к rigid-body home, если безопасно ---------- */
@@ -406,6 +425,81 @@ function segmentSegmentClosest(a1, a2, b1, b2) {
   const p2 = { x: b1.x + t * d2x, y: b1.y + t * d2y };
   const dist = Math.hypot(p1.x - p2.x, p1.y - p2.y);
   return { dist, p1, p2 };
+}
+/**
+ * Для случая «одна общая вершина»: пробуем 8 углов поворота вокруг неё
+ * и выбираем тот, что даёт меньше всего наложений с уже размещёнными
+ * графами. Предпочтение — меньшим углам (чтобы граф не разворачивался
+ * «вверх ногами» без нужды).
+ *
+ * Возвращает { cos, sin, tx, ty }.
+ */
+function bestRotationForSingleShared(si, sg, pair, transforms, order,
+                                     graphSet, pvBySource, preview,
+                                     graph, _placedNodeIds) {
+  // Собираем позиции ВСЕХ нод этого графа (в локальной СК)
+  const localPositions = [];
+  for (const node of sg.nodes) {
+    const pvId = pvBySource.get(`${si}:${node.id}`);
+    if (!pvId) continue;
+    const pv = preview.node(pvId);
+    if (!pv) continue;
+    localPositions.push({ x: pv.x, y: pv.y });
+  }
+
+  // Позиции уже размещённых нод (в глобальной СК)
+  const placed = [];
+  for (const sj of order) {
+    if (sj === si) break;
+    const t = transforms[sj] || { cos: 1, sin: 0, tx: 0, ty: 0 };
+    for (const node of graphSet.graphs[sj].graph.nodes) {
+      const pvId = pvBySource.get(`${sj}:${node.id}`);
+      if (!pvId) continue;
+      const pv = preview.node(pvId);
+      if (!pv) continue;
+      placed.push({
+        x: t.cos * pv.x - t.sin * pv.y + t.tx,
+        y: t.sin * pv.x + t.cos * pv.y + t.ty,
+      });
+    }
+  }
+
+  const anchorL = { x: pair.lx, y: pair.ly };
+  const anchorT = { x: pair.tx, y: pair.ty };
+  const minSep = 52;
+
+  let bestScore = Infinity;
+  let bestT = { cos: 1, sin: 0, tx: anchorT.x - anchorL.x, ty: anchorT.y - anchorL.y };
+
+  for (let i = 0; i < 8; i++) {
+    const angle = (i / 8) * Math.PI * 2;
+    const cos = Math.cos(angle), sin = Math.sin(angle);
+    // Трансформ, переводящий anchorL → anchorT с поворотом angle
+    const tx = anchorT.x - (cos * anchorL.x - sin * anchorL.y);
+    const ty = anchorT.y - (sin * anchorL.x + cos * anchorL.y);
+
+    // Считаем наложения
+    let overlap = 0;
+    for (const lp of localPositions) {
+      const gx = cos * lp.x - sin * lp.y + tx;
+      const gy = sin * lp.x + cos * lp.y + ty;
+      for (const pp of placed) {
+        const d = Math.hypot(gx - pp.x, gy - pp.y);
+        if (d < minSep) overlap += (minSep - d) * 100;
+      }
+    }
+
+    // Мягкий штраф за большие углы — предпочитаем 0°, 45°, 315° ...
+    const turnPenalty = Math.min(i, 8 - i) * 8;
+    const score = overlap + turnPenalty;
+
+    if (score < bestScore) {
+      bestScore = score;
+      bestT = { cos, sin, tx, ty };
+    }
+  }
+
+  return bestT;
 }
 function kabsch(pairs) {
   let lcx = 0, lcy = 0, pcx = 0, pcy = 0;

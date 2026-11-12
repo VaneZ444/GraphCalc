@@ -638,9 +638,7 @@ export class App extends Emitter {
       return preview;
     }
 
-    // Компактная preview-сетка в центральных 70% канваса:
-    // самое большое расстояние от якоря до мелкого графа ≈ половина
-    // предыдущего. Именно это убирает «перелёт через пол экрана».
+    // --- компактная сетка в центральных 70% канваса ---
     const regionW = CANVAS.width * 0.7;
     const regionH = CANVAS.height * 0.7;
     const offsetX = (CANVAS.width - regionW) / 2;
@@ -651,8 +649,7 @@ export class App extends Emitter {
     const cellW = regionW / cols;
     const cellH = regionH / rows;
 
-    // Сортируем ячейки по расстоянию от центра сетки — самые большие графы
-    // уходят в центр, мелкие — по краям.
+    // --- ячейки, сортированные center-out ---
     const gridCx = offsetX + regionW / 2;
     const gridCy = offsetY + regionH / 2;
     const cells = [];
@@ -665,37 +662,56 @@ export class App extends Emitter {
     }
     cells.sort((a, b) => a.d - b.d);
 
-    // Графы сортируем по размеру убыв. — самый большой получает
-    // центральную ячейку.
+    // --- крупные графы → в центр ---
     const indexed = graphs.map((g, i) => ({ g, i, size: g.graph.nodes.length }));
     indexed.sort((a, b) => b.size - a.size || a.i - b.i);
 
-    const pad = 36;
+    // --- общий масштаб: самый большой граф должен влезть в ячейку ---
+    let maxSize = 1;
+    for (const entry of graphs) {
+      const ns = entry.graph.nodes;
+      if (ns.length === 0) continue;
+      let mnx = Infinity, mny = Infinity, mxx = -Infinity, mxy = -Infinity;
+      for (const n of ns) {
+        mnx = Math.min(mnx, n.x); mny = Math.min(mny, n.y);
+        mxx = Math.max(mxx, n.x); mxy = Math.max(mxy, n.y);
+      }
+      maxSize = Math.max(maxSize, mxx - mnx, mxy - mny);
+    }
+    const pad = 32;
+    const scale = Math.min(
+      (cellW - pad * 2) / maxSize,
+      (cellH - pad * 2) / maxSize,
+      1,
+    );
 
+    // --- размещаем каждый граф, СОХРАНЯЯ его форму из source ---
     indexed.forEach((item, rank) => {
       const cell = cells[rank];
       if (!cell) return;
-      const { cx, cy } = cell;
-      const srcIdx = item.i;
-      const entry = graphs[srcIdx];
-      const radius = Math.min(cellW, cellH) / 2 - pad;
+
+      const entry = graphs[item.i];
+      const ns = entry.graph.nodes;
+      if (ns.length === 0) return;
+
+      // Bounding box этого графа по РЕАЛЬНЫМ позициям пользователя
+      let gMinX = Infinity, gMinY = Infinity, gMaxX = -Infinity, gMaxY = -Infinity;
+      for (const n of ns) {
+        gMinX = Math.min(gMinX, n.x); gMinY = Math.min(gMinY, n.y);
+        gMaxX = Math.max(gMaxX, n.x); gMaxY = Math.max(gMaxY, n.y);
+      }
+      const gCx = (gMinX + gMaxX) / 2;
+      const gCy = (gMinY + gMaxY) / 2;
 
       const localMap = new Map();
-      const nodes = entry.graph.nodes;
-      const count = nodes.length;
-
-      nodes.forEach((node, j) => {
-        let x, y;
-        if (count === 1) { x = cx; y = cy; }
-        else {
-          const angle = (j / count) * Math.PI * 2 - Math.PI / 2;
-          x = cx + Math.cos(angle) * radius;
-          y = cy + Math.sin(angle) * radius;
-        }
+      for (const node of ns) {
+        // РЕАЛЬНАЯ позиция пользователя, отцентрованная и отмасштабированная
+        const x = cell.cx + (node.x - gCx) * scale;
+        const y = cell.cy + (node.y - gCy) * scale;
         const un = preview.addNode(x, y, node.label);
         localMap.set(node.id, un.id);
-        originMap.set(un.id, { sourceIndex: srcIdx, sourceNodeId: node.id });
-      });
+        originMap.set(un.id, { sourceIndex: item.i, sourceNodeId: node.id });
+      }
 
       for (const edge of entry.graph.edges) {
         const from = localMap.get(edge.from);
