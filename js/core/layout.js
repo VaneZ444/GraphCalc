@@ -1,18 +1,17 @@
 // js/core/layout.js
 //
-// Incremental rigid-body layout + overlap resolution.
+// Incremental rigid-body layout via BFS from anchor.
 //
-//   1. ФИКСИРОВАННЫЙ порядок обхода (размер убыв.). Якорь — самый большой.
-//   2. Якорь не двигается (трансформ identity).
-//   3. Каждый следующий граф получает одну жёсткую Kabsch-трансформацию
-//      по общим применённым вершинам с более ранними графами.
-//   4. Ноды, которые после трансформа оказались ближе minSeparation,
-//      расталкиваются с учётом массы: якорь = ∞, крупные графы тяжёлые,
-//      мелкие лёгкие. Мелкий уезжает, крупный почти не двигается.
-//   5. Cleanup: ноды тянутся назад к rigid-body позициям, но только
-//      если новый position не создаст нового наложения.
-//
-// Результат: минимальные сдвиги между шагами + никаких скрытых нод.
+//   1. Anchor = граф с наибольшим числом нод. Никогда не двигается.
+//   2. Обход BFS от anchor: посещаем графы, у которых есть общие
+//      применённые метки с уже посещёнными. Острова (без общих) в конец.
+//   3. Для каждого графа выбирается ОДИН родитель — уже размещённый граф
+//      с максимальным числом общих применённых вершин.
+//   4. Присоединение к родителю:
+//        – 1 общая вершина → чистый сдвиг (форма и ориентация сохранены);
+//        – ≥2 общих         → Kabsch (минимальный поворот + сдвиг).
+//   5. resolveOverlaps раздвигает наложения с учётом массы, но не даёт
+//      нодам уехать дальше nodeRadius*3 от rigid-body позиции.
 
 export function incrementalRigidLayout(graph, ctx) {
   let nodeRadius = ctx.nodeRadius;
@@ -21,8 +20,8 @@ export function incrementalRigidLayout(graph, ctx) {
   }
 
   const { preview, pvBySource, pvToGraphNode, graphSet, appliedLabels } = ctx;
-
   const N = graphSet.graphs.length;
+  if (N === 0) return;
 
   // ---------- pvId → origin ----------
   const pvOrigin = new Map();
@@ -45,25 +44,60 @@ export function incrementalRigidLayout(graph, ctx) {
     }
   }
 
-  // ---------- ФИКСИРОВАННЫЙ порядок ----------
-  const order = [];
+  // ---------- Anchor ----------
+  let anchorSi = -1;
+  let anchorSize = -1;
   for (let si = 0; si < N; si++) {
-    if (graphSet.graphs[si].graph.nodes.length > 0) order.push(si);
+    const sz = graphSet.graphs[si].graph.nodes.length;
+    if (sz > anchorSize) {
+      anchorSize = sz;
+      anchorSi = si;
+    }
   }
-  order.sort((a, b) => {
-    const sa = graphSet.graphs[a].graph.nodes.length;
-    const sb = graphSet.graphs[b].graph.nodes.length;
-    if (sa !== sb) return sb - sa;
-    return a - b;
-  });
 
-  const anchorSi = order[0];
+  // ---------- BFS order ----------
+  const order = [];
+  const visited = new Set();
 
-  // ---------- Трансформы ----------
+  if (anchorSi >= 0) {
+    visited.add(anchorSi);
+    const queue = [anchorSi];
+    while (queue.length) {
+      const si = queue.shift();
+      order.push(si);
+
+      const siLabels = new Set(
+        graphSet.graphs[si].graph.nodes
+          .map(n => n.label)
+          .filter(l => appliedLabels.has(l))
+      );
+      if (siLabels.size === 0) continue;
+
+      for (let sj = 0; sj < N; sj++) {
+        if (visited.has(sj)) continue;
+        if (graphSet.graphs[sj].graph.nodes.length === 0) continue;
+        const shares = graphSet.graphs[sj].graph.nodes
+          .some(n => appliedLabels.has(n.label) && siLabels.has(n.label));
+        if (shares) {
+          visited.add(sj);
+          queue.push(sj);
+        }
+      }
+    }
+  }
+
+  for (let si = 0; si < N; si++) {
+    if (!visited.has(si) && graphSet.graphs[si].graph.nodes.length > 0) {
+      order.push(si);
+    }
+  }
+
+  const realAnchor = order[0];
   const transforms = {};
 
+  // ---------- Трансформы ----------
   for (const si of order) {
-    if (si === anchorSi) {
+    if (si === realAnchor) {
       transforms[si] = { cos: 1, sin: 0, tx: 0, ty: 0 };
       continue;
     }
@@ -72,31 +106,58 @@ export function incrementalRigidLayout(graph, ctx) {
     const appliedHere = [...new Set(sg.nodes.map(n => n.label))]
       .filter(l => appliedLabels.has(l));
 
-    const pairs = [];
-    for (const label of appliedHere) {
-      let targetPos = null;
-      for (const sj of order) {
-        if (sj === si) break;
-        const nodeJ = graphSet.graphs[sj].graph.nodes.find(n => n.label === label);
-        if (!nodeJ) continue;
-        const pvIdJ = pvBySource.get(`${sj}:${nodeJ.id}`);
-        if (!pvIdJ) continue;
-        const pvJ = preview.node(pvIdJ);
-        if (!pvJ) continue;
-        const tj = transforms[sj];
-        targetPos = {
-          x: tj.cos * pvJ.x - tj.sin * pvJ.y + tj.tx,
-          y: tj.sin * pvJ.x + tj.cos * pvJ.y + tj.ty,
-        };
-        break;
-      }
-      if (!targetPos) continue;
+    if (appliedHere.length === 0) {
+      transforms[si] = { cos: 1, sin: 0, tx: 0, ty: 0 };
+      continue;
+    }
 
+    // Лучший родитель — уже размещённый, с максимумом общих применённых
+    let bestParent = -1;
+    let bestShared = [];
+
+    for (const sj of order) {
+      if (sj === si) break;
+      if (!transforms[sj]) continue;
+
+      const sjLabels = new Set(
+        graphSet.graphs[sj].graph.nodes
+          .map(n => n.label)
+          .filter(l => appliedLabels.has(l))
+      );
+      const shared = appliedHere.filter(l => sjLabels.has(l));
+
+      if (shared.length > bestShared.length) {
+        bestShared = shared;
+        bestParent = sj;
+      }
+    }
+
+    if (bestParent === -1 || bestShared.length === 0) {
+      transforms[si] = { cos: 1, sin: 0, tx: 0, ty: 0 };
+      continue;
+    }
+
+    const pairs = [];
+    for (const label of bestShared) {
       const localNode = sg.nodes.find(n => n.label === label);
+      if (!localNode) continue;
       const pvIdL = pvBySource.get(`${si}:${localNode.id}`);
       if (!pvIdL) continue;
       const pvL = preview.node(pvIdL);
       if (!pvL) continue;
+
+      const parentNode = graphSet.graphs[bestParent].graph.nodes.find(n => n.label === label);
+      if (!parentNode) continue;
+      const pvIdP = pvBySource.get(`${bestParent}:${parentNode.id}`);
+      if (!pvIdP) continue;
+      const pvP = preview.node(pvIdP);
+      if (!pvP) continue;
+
+      const tp = transforms[bestParent];
+      const targetPos = {
+        x: tp.cos * pvP.x - tp.sin * pvP.y + tp.tx,
+        y: tp.sin * pvP.x + tp.cos * pvP.y + tp.ty,
+      };
 
       pairs.push({ lx: pvL.x, ly: pvL.y, tx: targetPos.x, ty: targetPos.y });
     }
@@ -104,21 +165,15 @@ export function incrementalRigidLayout(graph, ctx) {
     if (pairs.length === 0) {
       transforms[si] = { cos: 1, sin: 0, tx: 0, ty: 0 };
     } else if (pairs.length === 1) {
-    // Kabsch не может посчитать поворот по одной точке — пробуем
-    // 8 углов (45° шаг) и берём тот, где меньше всего наложений.
-    // Предпочтение отдаём меньшим углам.
-    transforms[si] = bestRotationForSingleShared(
-        si, sg, pairs[0],
-        transforms, order, graphSet, pvBySource, preview,
-        graph, /* placedNodeIds: */ null,
-    );
+      // Чистый сдвиг — форма и ориентация сохранены
+      const p = pairs[0];
+      transforms[si] = { cos: 1, sin: 0, tx: p.tx - p.lx, ty: p.ty - p.ly };
     } else {
       transforms[si] = kabsch(pairs);
     }
   }
 
-  // ---------- Применяем трансформы ----------
-    // ---------- Применяем трансформы ----------
+  // ---------- Применяем ----------
   for (const node of graph.nodes) {
     const info = nodeInfo.get(node.id);
     if (!info) continue;
@@ -129,7 +184,7 @@ export function incrementalRigidLayout(graph, ctx) {
     node.y = t.sin * pv.x + t.cos * pv.y + t.ty;
   }
 
-  // ---------- Проверка NaN: любая нода с NaN откатывается на preview ----------
+  // ---------- NaN-страховка ----------
   let nanCount = 0;
   for (const node of graph.nodes) {
     if (!isFinite(node.x) || !isFinite(node.y)) {
@@ -137,25 +192,22 @@ export function incrementalRigidLayout(graph, ctx) {
       const info = nodeInfo.get(node.id);
       const pv = info ? preview.node(info.pvId) : null;
       if (pv && isFinite(pv.x) && isFinite(pv.y)) {
-        node.x = pv.x;
-        node.y = pv.y;
+        node.x = pv.x; node.y = pv.y;
       } else {
-        // крайний случай — в центр канваса
-        node.x = 500;
-        node.y = 320;
+        node.x = 500; node.y = 320;
       }
     }
   }
   if (nanCount > 0) {
-    console.warn(`[layout] ${nanCount} node(s) had NaN position after transform — reset to preview`);
+    console.warn(`[layout] ${nanCount} node(s) had NaN position — reset to preview`);
   }
 
-  // ---------- Расталкиваем наложения ----------
+  // ---------- resolveOverlaps ----------
   const nodeSourceIndex = new Map();
   for (const [gNodeId, info] of nodeInfo) nodeSourceIndex.set(gNodeId, info.si);
 
   const minSeparation = nodeRadius * 2 + 44;
-  resolveOverlaps(graph, nodeSourceIndex, anchorSi, minSeparation);
+  resolveOverlaps(graph, nodeSourceIndex, realAnchor, minSeparation, nodeRadius);
 }
 
 /* ===================================================================== */
@@ -163,28 +215,23 @@ export function incrementalRigidLayout(graph, ctx) {
 /* ===================================================================== */
 
 function resolveOverlaps(graph, graphOfNode, anchorSi, minNodeSep, nodeRadius) {
-  // --- Санитизация входа ---
   if (!isFinite(nodeRadius) || nodeRadius <= 0) nodeRadius = 14;
   if (!isFinite(minNodeSep) || minNodeSep <= 0) minNodeSep = nodeRadius * 2 + 60;
 
   const n = graph.nodes.length;
   if (n < 2) return;
 
-  // --- Санитизация позиций: если какая-то нода уже NaN, ставим в центр ---
   for (const node of graph.nodes) {
     if (!isFinite(node.x)) node.x = 500;
     if (!isFinite(node.y)) node.y = 320;
   }
 
   const homeMap = new Map();
-  for (const node of graph.nodes) {
-    homeMap.set(node.id, { x: node.x, y: node.y });
-  }
+  for (const node of graph.nodes) homeMap.set(node.id, { x: node.x, y: node.y });
 
   const sizes = new Map();
-  for (const [, si] of graphOfNode) {
-    sizes.set(si, (sizes.get(si) || 0) + 1);
-  }
+  for (const [, si] of graphOfNode) sizes.set(si, (sizes.get(si) || 0) + 1);
+
   const massOf = (id) => {
     const si = graphOfNode.get(id);
     if (si === anchorSi) return 1e9;
@@ -200,15 +247,15 @@ function resolveOverlaps(graph, graphOfNode, anchorSi, minNodeSep, nodeRadius) {
     b: graph.node(e.to),
   })).filter(e => e.a && e.b);
 
-  /* ---------- Фаза push: node-node, node-edge, edge-edge ---------- */
   const iterations = 30;
   for (let iter = 0; iter < iterations; iter++) {
     let moved = false;
 
-    // --- 1. Node-node ---
+    // --- node-node ---
     for (let i = 0; i < n; i++) {
       for (let j = i + 1; j < n; j++) {
         const a = graph.nodes[i], b = graph.nodes[j];
+        if (!isFinite(a.x) || !isFinite(a.y) || !isFinite(b.x) || !isFinite(b.y)) continue;
         const dx = b.x - a.x, dy = b.y - a.y;
         let dist = Math.hypot(dx, dy);
         if (dist >= minNodeSep) continue;
@@ -233,10 +280,12 @@ function resolveOverlaps(graph, graphOfNode, anchorSi, minNodeSep, nodeRadius) {
       }
     }
 
-    // --- 2. Node-edge ---
+    // --- node-edge ---
     for (const node of graph.nodes) {
+      if (!isFinite(node.x) || !isFinite(node.y)) continue;
       for (const { a, b } of edgeList) {
         if (a.id === node.id || b.id === node.id) continue;
+        if (!isFinite(a.x) || !isFinite(a.y) || !isFinite(b.x) || !isFinite(b.y)) continue;
 
         const cp = pointSegmentClosest(node.x, node.y, a.x, a.y, b.x, b.y);
         let dx = node.x - cp.x, dy = node.y - cp.y;
@@ -261,7 +310,6 @@ function resolveOverlaps(graph, graphOfNode, anchorSi, minNodeSep, nodeRadius) {
 
         node.x += (dx / dist) * overlap * nodeShare * f;
         node.y += (dy / dist) * overlap * nodeShare * f;
-
         a.x -= (dx / dist) * overlap * edgeShare * f;
         a.y -= (dy / dist) * overlap * edgeShare * f;
         b.x -= (dx / dist) * overlap * edgeShare * f;
@@ -269,13 +317,15 @@ function resolveOverlaps(graph, graphOfNode, anchorSi, minNodeSep, nodeRadius) {
       }
     }
 
-    // --- 3. Edge-edge ---
+    // --- edge-edge ---
     if (enableEdgeEdge) {
       for (let i = 0; i < edgeList.length; i++) {
         for (let j = i + 1; j < edgeList.length; j++) {
           const e1 = edgeList[i], e2 = edgeList[j];
           if (e1.a.id === e2.a.id || e1.a.id === e2.b.id ||
               e1.b.id === e2.a.id || e1.b.id === e2.b.id) continue;
+          if (!isFinite(e1.a.x) || !isFinite(e1.a.y) || !isFinite(e1.b.x) || !isFinite(e1.b.y)) continue;
+          if (!isFinite(e2.a.x) || !isFinite(e2.a.y) || !isFinite(e2.b.x) || !isFinite(e2.b.y)) continue;
 
           const res = segmentSegmentClosest(e1.a, e1.b, e2.a, e2.b);
           if (res.dist >= minEdgeEdgeGap) continue;
@@ -313,22 +363,24 @@ function resolveOverlaps(graph, graphOfNode, anchorSi, minNodeSep, nodeRadius) {
     }
 
     if (!moved) break;
-    const maxDeviation = nodeRadius * 3;
-    for (const node of graph.nodes) {
-        const home = homeMap.get(node.id);
-        if (!home) continue;
-        const dx = node.x - home.x;
-        const dy = node.y - home.y;
-        const dist = Math.hypot(dx, dy);
-        if (dist > maxDeviation) {
-        const k = maxDeviation / dist;
-        node.x = home.x + dx * k;
-        node.y = home.y + dy * k;
-        }
+  }
+
+  // --- Clamp отклонения от rigid-body home ---
+  const maxDeviation = nodeRadius * 3;
+  for (const node of graph.nodes) {
+    const home = homeMap.get(node.id);
+    if (!home) continue;
+    const dx = node.x - home.x;
+    const dy = node.y - home.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist > maxDeviation) {
+      const k = maxDeviation / dist;
+      node.x = home.x + dx * k;
+      node.y = home.y + dy * k;
     }
   }
 
-  /* ---------- Cleanup: тянем к rigid-body home, если безопасно ---------- */
+  // --- Cleanup ---
   for (let iter = 0; iter < 15; iter++) {
     let moved = false;
     for (const node of graph.nodes) {
@@ -368,9 +420,8 @@ function resolveOverlaps(graph, graphOfNode, anchorSi, minNodeSep, nodeRadius) {
 }
 
 /* ===================================================================== */
-/*  Kabsch                                                               */
+/*  Geometry + Kabsch                                                    */
 /* ===================================================================== */
-/* ---------- Геометрия ------------------------------------------------ */
 
 function pointSegmentClosest(px, py, ax, ay, bx, by) {
   const dx = bx - ax, dy = by - ay;
@@ -381,8 +432,6 @@ function pointSegmentClosest(px, py, ax, ay, bx, by) {
 }
 
 function segmentSegmentClosest(a1, a2, b1, b2) {
-  // Возвращает { dist, p1: {x,y}, p2: {x,y} } — ближайшие точки на двух
-  // отрезках и расстояние между ними.
   const d1x = a2.x - a1.x, d1y = a2.y - a1.y;
   const d2x = b2.x - b1.x, d2y = b2.y - b1.y;
   const rx = a1.x - b1.x, ry = a1.y - b1.y;
@@ -426,81 +475,7 @@ function segmentSegmentClosest(a1, a2, b1, b2) {
   const dist = Math.hypot(p1.x - p2.x, p1.y - p2.y);
   return { dist, p1, p2 };
 }
-/**
- * Для случая «одна общая вершина»: пробуем 8 углов поворота вокруг неё
- * и выбираем тот, что даёт меньше всего наложений с уже размещёнными
- * графами. Предпочтение — меньшим углам (чтобы граф не разворачивался
- * «вверх ногами» без нужды).
- *
- * Возвращает { cos, sin, tx, ty }.
- */
-function bestRotationForSingleShared(si, sg, pair, transforms, order,
-                                     graphSet, pvBySource, preview,
-                                     graph, _placedNodeIds) {
-  // Собираем позиции ВСЕХ нод этого графа (в локальной СК)
-  const localPositions = [];
-  for (const node of sg.nodes) {
-    const pvId = pvBySource.get(`${si}:${node.id}`);
-    if (!pvId) continue;
-    const pv = preview.node(pvId);
-    if (!pv) continue;
-    localPositions.push({ x: pv.x, y: pv.y });
-  }
 
-  // Позиции уже размещённых нод (в глобальной СК)
-  const placed = [];
-  for (const sj of order) {
-    if (sj === si) break;
-    const t = transforms[sj] || { cos: 1, sin: 0, tx: 0, ty: 0 };
-    for (const node of graphSet.graphs[sj].graph.nodes) {
-      const pvId = pvBySource.get(`${sj}:${node.id}`);
-      if (!pvId) continue;
-      const pv = preview.node(pvId);
-      if (!pv) continue;
-      placed.push({
-        x: t.cos * pv.x - t.sin * pv.y + t.tx,
-        y: t.sin * pv.x + t.cos * pv.y + t.ty,
-      });
-    }
-  }
-
-  const anchorL = { x: pair.lx, y: pair.ly };
-  const anchorT = { x: pair.tx, y: pair.ty };
-  const minSep = 52;
-
-  let bestScore = Infinity;
-  let bestT = { cos: 1, sin: 0, tx: anchorT.x - anchorL.x, ty: anchorT.y - anchorL.y };
-
-  for (let i = 0; i < 8; i++) {
-    const angle = (i / 8) * Math.PI * 2;
-    const cos = Math.cos(angle), sin = Math.sin(angle);
-    // Трансформ, переводящий anchorL → anchorT с поворотом angle
-    const tx = anchorT.x - (cos * anchorL.x - sin * anchorL.y);
-    const ty = anchorT.y - (sin * anchorL.x + cos * anchorL.y);
-
-    // Считаем наложения
-    let overlap = 0;
-    for (const lp of localPositions) {
-      const gx = cos * lp.x - sin * lp.y + tx;
-      const gy = sin * lp.x + cos * lp.y + ty;
-      for (const pp of placed) {
-        const d = Math.hypot(gx - pp.x, gy - pp.y);
-        if (d < minSep) overlap += (minSep - d) * 100;
-      }
-    }
-
-    // Мягкий штраф за большие углы — предпочитаем 0°, 45°, 315° ...
-    const turnPenalty = Math.min(i, 8 - i) * 8;
-    const score = overlap + turnPenalty;
-
-    if (score < bestScore) {
-      bestScore = score;
-      bestT = { cos, sin, tx, ty };
-    }
-  }
-
-  return bestT;
-}
 function kabsch(pairs) {
   let lcx = 0, lcy = 0, pcx = 0, pcy = 0;
   for (const p of pairs) {
